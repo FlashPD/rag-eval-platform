@@ -1,0 +1,11 @@
+metrics:
+  ndcg_at_10:
+    maximum_absolute_drop: 0.01
+  recall_at_10:
+    maximum_absolute_drop: 0.01
+  recall_at_100:
+    maximum_absolute_drop: 0.01
+  mrr_at_10:
+    maximum_absolute_drop: 0.01
+  faithfulness:
+    maximum_absolute_drop: 0.02

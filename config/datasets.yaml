@@ -1,0 +1,16 @@
+datasets:
+  fixture:
+    source: local
+    version: "1"
+    default_split: test
+    license_name: Test fixture; repository use only
+    path: ../fixtures/tiny-beir
+
+  scifact:
+    source: remote
+    version: beir-2022-06-29
+    default_split: test
+    license_name: "Corpus: ODC-By 1.0; claims and annotations: CC BY 4.0"
+    url: https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/scifact.zip
+    checksum_algorithm: md5
+    checksum: 5f7d1de60b170fc8027bb7898e2efca1
