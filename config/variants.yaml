@@ -1,0 +1,39 @@
+variants:
+  bm25:
+    sparse:
+      backend: bm25s
+      k: 100
+
+  dense_bge_small:
+    dense:
+      model: BAAI/bge-small-en-v1.5
+      k: 100
+      index: hnsw
+
+  hybrid_rrf:
+    sparse:
+      backend: bm25s
+      k: 100
+    dense:
+      model: BAAI/bge-small-en-v1.5
+      k: 100
+      index: hnsw
+    fusion:
+      method: rrf
+      k: 60
+
+  hybrid_rrf_rerank:
+    sparse:
+      backend: bm25s
+      k: 100
+    dense:
+      model: BAAI/bge-small-en-v1.5
+      k: 100
+      index: hnsw
+    fusion:
+      method: rrf
+      k: 60
+    rerank:
+      model: cross-encoder/ms-marco-MiniLM-L-6-v2
+      candidates: 50
+      keep: 10
