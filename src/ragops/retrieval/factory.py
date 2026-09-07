@@ -18,6 +18,7 @@ def build_retrieval_pipeline(
     *,
     artifact_root: Path,
     device: str | None = None,
+    model_cache_directory: Path | None = None,
 ) -> RetrievalPipeline:
     embedding_profiles = {profile.model: profile for profile in bundle.models.embeddings.values()}
     reranker_profiles = {profile.model: profile for profile in bundle.models.rerankers.values()}
@@ -52,11 +53,17 @@ def build_retrieval_pipeline(
             model_id,
             normalized=embedding_profiles[model_id].normalize,
             device=device,
+            cache_directory=model_cache_directory,
         )
         for model_id in dense_model_ids
     }
     rerankers: dict[str, Reranker] = {
-        model_id: CrossEncoderReranker(model_id, device=device) for model_id in reranker_model_ids
+        model_id: CrossEncoderReranker(
+            model_id,
+            device=device,
+            cache_directory=model_cache_directory,
+        )
+        for model_id in reranker_model_ids
     }
     return RetrievalPipeline(
         datasets=bundle.datasets,

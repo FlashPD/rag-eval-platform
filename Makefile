@@ -1,6 +1,10 @@
-.PHONY: install format lint typecheck test check run db-upgrade db-downgrade
+.PHONY: install format lint typecheck test check run eval-run db-upgrade db-downgrade
 
 PYTHON := .venv/bin/python
+RAGOPS := .venv/bin/ragops
+DATASET ?= fixture
+VARIANTS ?= bm25
+SEED ?= 42
 
 install:
 	$(PYTHON) -m pip install --upgrade pip
@@ -25,6 +29,9 @@ check: lint typecheck test
 
 run:
 	$(PYTHON) -m uvicorn ragops.api:app --reload
+
+eval-run:
+	$(RAGOPS) eval run --dataset $(DATASET) --variants $(VARIANTS) --seed $(SEED) $(if $(SAMPLE_SIZE),--sample-size $(SAMPLE_SIZE))
 
 db-upgrade:
 	$(PYTHON) -m alembic upgrade head

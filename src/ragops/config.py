@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+asyncpg://ragops:ragops@localhost:5432/ragops"
     configuration_directory: Path = Path("config")
     artifact_directory: Path = Path("artifacts")
+    model_cache_directory: Path = Path("artifacts/models")
     model_device: str | None = None
     worker_poll_interval_seconds: PositiveFloat = 1.0
     worker_lease_seconds: PositiveInt = 300

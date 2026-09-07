@@ -11,7 +11,7 @@ from opentelemetry.trace import get_tracer
 from ragops.config import DatasetCatalog, VariantRegistry
 from ragops.contracts import RankedHit, SearchRequest, SearchResponse, StageTiming
 from ragops.ingestion.embedders import QueryEmbedder
-from ragops.retrieval.errors import CompatibleIndexNotFoundError, RetrievalLimitError
+from ragops.retrieval.errors import CompatibleIndexNotFoundError
 from ragops.retrieval.fusion import reciprocal_rank_fusion
 from ragops.retrieval.rerank import Reranker
 from ragops.retrieval.sparse import SparseRetriever
@@ -56,11 +56,6 @@ class RetrievalPipeline:
     async def search(self, request: SearchRequest) -> SearchResponse:
         variant = self._variants.get(request.variant)
         manifest = self._datasets.get(request.dataset)
-        if variant.rerank is not None and request.k > variant.rerank.keep:
-            raise RetrievalLimitError(
-                f"requested k={request.k} exceeds reranker keep={variant.rerank.keep}"
-            )
-
         timings: list[StageTiming] = []
         with self._tracer.start_as_current_span("search") as search_span:
             search_span.set_attribute("rag.dataset", request.dataset)
@@ -140,7 +135,7 @@ class RetrievalPipeline:
                     original_ranks = {
                         hit.document_id: rank for rank, hit in enumerate(candidate_hits)
                     }
-                    current = tuple(
+                    reranked = tuple(
                         sorted(
                             (
                                 StageHit(document_id=hit.document_id, score=float(score))
@@ -152,8 +147,18 @@ class RetrievalPipeline:
                                 hit.document_id,
                             ),
                         )
-                    )[: variant.rerank.keep]
-                self._record_scores(stage_scores, "rerank_score", current)
+                    )
+                    # Reranking reorders the candidate window rather than truncating the
+                    # result list: the top `keep` hits are promoted and every remaining
+                    # candidate keeps its fused order below them. Retrieval depth therefore
+                    # stays identical across variants, so depth-100 metrics remain
+                    # comparable between a reranked variant and its unreranked parent.
+                    promoted = reranked[: variant.rerank.keep]
+                    promoted_ids = {hit.document_id for hit in promoted}
+                    current = promoted + tuple(
+                        hit for hit in current if hit.document_id not in promoted_ids
+                    )
+                self._record_scores(stage_scores, "rerank_score", reranked)
 
             final_hits = current[: request.k]
             async with self._stage("hydrate_results", timings):

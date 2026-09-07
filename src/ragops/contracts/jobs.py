@@ -8,6 +8,8 @@ from pydantic import Field, JsonValue, PositiveInt
 
 from ragops.contracts.base import Contract
 
+EVALUATION_JOB_KIND = "evaluation.retrieval"
+
 
 class JobStatus(StrEnum):
     PENDING = "pending"

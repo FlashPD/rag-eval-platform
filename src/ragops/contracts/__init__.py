@@ -1,17 +1,22 @@
 """Typed contracts shared across ragops boundaries."""
 
 from ragops.contracts.evaluation import (
+    BaselineDocument,
     Comparison,
     EvalProgress,
     EvalRun,
     EvalRunSpec,
     EvalRunState,
+    EvaluationQuery,
+    EvaluationReport,
     GateMetricResult,
     GateResult,
     JudgeClaimVerdict,
     JudgeVerdict,
+    LatencySummary,
     MetricSummary,
     QueryResult,
+    RetrievalMetricScores,
     ensure_state_transition,
 )
 from ragops.contracts.generation import (
@@ -32,7 +37,7 @@ from ragops.contracts.ingestion import (
     SourceQrel,
     SourceQuery,
 )
-from ragops.contracts.jobs import Job, JobSpec, JobStatus
+from ragops.contracts.jobs import EVALUATION_JOB_KIND, Job, JobSpec, JobStatus
 from ragops.contracts.resources import (
     Dataset,
     DocumentEmbedding,
@@ -53,9 +58,11 @@ from ragops.contracts.retrieval import (
 )
 
 __all__ = [
+    "EVALUATION_JOB_KIND",
     "AnswerRequest",
     "AnswerResponse",
     "ArtifactReference",
+    "BaselineDocument",
     "Comparison",
     "Confidence",
     "Dataset",
@@ -65,6 +72,8 @@ __all__ = [
     "EvalRun",
     "EvalRunSpec",
     "EvalRunState",
+    "EvaluationQuery",
+    "EvaluationReport",
     "FusionStageConfig",
     "GateMetricResult",
     "GateResult",
@@ -78,6 +87,7 @@ __all__ = [
     "JobStatus",
     "JudgeClaimVerdict",
     "JudgeVerdict",
+    "LatencySummary",
     "LoadedDataset",
     "MetricSummary",
     "Passage",
@@ -86,6 +96,7 @@ __all__ = [
     "QueryResult",
     "RankedHit",
     "RerankStageConfig",
+    "RetrievalMetricScores",
     "SearchRequest",
     "SearchResponse",
     "SourceDocument",

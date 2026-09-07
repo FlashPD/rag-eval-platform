@@ -1,0 +1,42 @@
+{
+  "dataset": "scifact",
+  "git_commit": null,
+  "metrics": {
+    "bm25": {
+      "mrr_at_10": 0.5428571428571428,
+      "ndcg_at_10": 0.5671455049221207,
+      "recall_at_10": 0.648,
+      "recall_at_100": 0.7959999999999999
+    },
+    "dense_bge_small": {
+      "mrr_at_10": 0.6387142857142858,
+      "ndcg_at_10": 0.6807988151684975,
+      "recall_at_10": 0.826,
+      "recall_at_100": 0.98
+    },
+    "hybrid_rrf": {
+      "mrr_at_10": 0.5914126984126984,
+      "ndcg_at_10": 0.6248204848955775,
+      "recall_at_10": 0.746,
+      "recall_at_100": 1.0
+    },
+    "hybrid_rrf_rerank": {
+      "mrr_at_10": 0.6099920634920635,
+      "ndcg_at_10": 0.6533538816964394,
+      "recall_at_10": 0.8053333333333333,
+      "recall_at_100": 1.0
+    }
+  },
+  "recorded_at": "2026-09-07T00:56:17.225862Z",
+  "run_id": "d10f154f-81a0-496e-8eec-0dcaf8c29746",
+  "sample_size": 50,
+  "seed": 42,
+  "split": "test",
+  "variant_hashes": {
+    "bm25": "d68440286741fdd5d56009c985b644665dab4b3fda6518a0d79237d5c98a8c23",
+    "dense_bge_small": "b4a88567fec6c5b6caf11eadec851a885a20ac41a3c22eac3a5790b53b43722e",
+    "hybrid_rrf": "e954dc6dd5448cbaa08ebc0e828918015f38b67d4fa68764417aa1ae057291a3",
+    "hybrid_rrf_rerank": "947c52274bbc63a4e97cee86c00b8913c9fed64a983540dcf3391ee1f71dbc68"
+  },
+  "version": 1
+}
