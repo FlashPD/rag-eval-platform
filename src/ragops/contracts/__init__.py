@@ -37,7 +37,7 @@ from ragops.contracts.ingestion import (
     SourceQrel,
     SourceQuery,
 )
-from ragops.contracts.jobs import Job, JobSpec, JobStatus
+from ragops.contracts.jobs import EVALUATION_JOB_KIND, Job, JobSpec, JobStatus
 from ragops.contracts.resources import (
     Dataset,
     DocumentEmbedding,
@@ -58,6 +58,7 @@ from ragops.contracts.retrieval import (
 )
 
 __all__ = [
+    "EVALUATION_JOB_KIND",
     "AnswerRequest",
     "AnswerResponse",
     "ArtifactReference",

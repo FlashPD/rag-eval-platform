@@ -31,11 +31,17 @@ THRESHOLDS = ThresholdCatalog(
 )
 
 
-def report_for(scores: dict[str, float], *, dataset: str = "scifact") -> EvaluationReport:
+def report_for(
+    scores: dict[str, float],
+    *,
+    dataset: str = "scifact",
+    sample_size: int | None = 50,
+    seed: int = 42,
+) -> EvaluationReport:
     now = datetime.now(UTC)
     run = EvalRun(
         id=uuid4(),
-        spec=EvalRunSpec(dataset=dataset, variants=("bm25",), seed=42),
+        spec=EvalRunSpec(dataset=dataset, variants=("bm25",), sample_size=sample_size, seed=seed),
         state=EvalRunState.COMPLETED,
         progress=EvalProgress(completed_queries=1, total_queries=1),
         git_commit="abc123",
@@ -59,10 +65,18 @@ def report_for(scores: dict[str, float], *, dataset: str = "scifact") -> Evaluat
     )
 
 
-def baseline_for(scores: dict[str, float], *, dataset: str = "scifact") -> BaselineDocument:
+def baseline_for(
+    scores: dict[str, float],
+    *,
+    dataset: str = "scifact",
+    sample_size: int | None = 50,
+    seed: int = 42,
+) -> BaselineDocument:
     return BaselineDocument(
         dataset=dataset,
         split="test",
+        sample_size=sample_size,
+        seed=seed,
         run_id=uuid4(),
         recorded_at=datetime.now(UTC),
         metrics={"bm25": scores},
@@ -153,3 +167,72 @@ def test_a_gated_run_round_trips_from_its_own_baseline() -> None:
     assert result.passed
     assert result.baseline_run_id == report.run.id
     assert result.metrics[0].delta == 0.0
+
+
+def test_gate_rejects_a_baseline_from_a_different_sample_size() -> None:
+    """A 300-query baseline and a 50-query run measure different benchmarks."""
+    with pytest.raises(ValueError, match="sample size does not match"):
+        evaluate_gate(
+            report_for({"ndcg_at_10": 0.60}, sample_size=50),
+            baseline_for({"ndcg_at_10": 0.60}, sample_size=300),
+            THRESHOLDS,
+        )
+
+
+def test_gate_rejects_a_full_run_against_a_sampled_baseline() -> None:
+    with pytest.raises(ValueError, match="sample size does not match"):
+        evaluate_gate(
+            report_for({"ndcg_at_10": 0.60}, sample_size=None),
+            baseline_for({"ndcg_at_10": 0.60}, sample_size=50),
+            THRESHOLDS,
+        )
+
+
+def test_gate_rejects_a_different_seed_when_queries_are_sampled() -> None:
+    with pytest.raises(ValueError, match="seed does not match"):
+        evaluate_gate(
+            report_for({"ndcg_at_10": 0.60}, sample_size=50, seed=7),
+            baseline_for({"ndcg_at_10": 0.60}, sample_size=50, seed=42),
+            THRESHOLDS,
+        )
+
+
+def test_gate_ignores_the_seed_when_every_query_is_evaluated() -> None:
+    """A full-dataset run evaluates the same queries whatever the seed."""
+    result = evaluate_gate(
+        report_for({"ndcg_at_10": 0.60}, sample_size=None, seed=7),
+        baseline_for({"ndcg_at_10": 0.60}, sample_size=None, seed=42),
+        THRESHOLDS,
+    )
+
+    assert result.passed
+
+
+def test_baseline_records_the_sample_it_was_measured_on() -> None:
+    report = report_for({"ndcg_at_10": 0.60}, sample_size=50, seed=42)
+
+    baseline = build_baseline(report, variant_hashes={"bm25": "hash-1"})
+
+    assert baseline.sample_size == 50
+    assert baseline.seed == 42
+
+
+def test_reading_a_baseline_from_an_older_schema_names_the_file(tmp_path: Path) -> None:
+    """An outdated baseline must fail with a fixable message, not a traceback."""
+    path = tmp_path / "main.json"
+    path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "dataset": "scifact",
+                "split": "test",
+                "run_id": str(uuid4()),
+                "recorded_at": datetime.now(UTC).isoformat(),
+                "metrics": {"bm25": {"ndcg_at_10": 0.6}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="does not match the current schema"):
+        read_baseline(path)

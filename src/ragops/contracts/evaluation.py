@@ -171,6 +171,8 @@ class BaselineDocument(Contract):
     version: Literal[1] = 1
     dataset: str = Field(min_length=1)
     split: str = Field(min_length=1)
+    sample_size: int | None = Field(default=None, gt=0)
+    seed: int
     run_id: UUID
     git_commit: str | None = None
     recorded_at: datetime

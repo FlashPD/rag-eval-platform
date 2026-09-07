@@ -321,6 +321,8 @@ def test_eval_baseline_command_writes_the_requested_path(
     baseline = BaselineDocument(
         dataset="scifact",
         split="test",
+        sample_size=50,
+        seed=42,
         run_id=run_id,
         recorded_at=datetime.now(UTC),
         metrics={"bm25": {"ndcg_at_10": 0.6}},
@@ -345,3 +347,41 @@ def test_eval_baseline_command_writes_the_requested_path(
     assert exit_code == 0
     assert read_baseline(output) == baseline
     assert str(output) in capsys.readouterr().out
+
+
+def test_eval_gate_command_separates_unusable_baselines_from_regressions(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A baseline that cannot be compared exits 2, not the regression code 1."""
+    run_id = uuid4()
+
+    class FakeEngine:
+        async def dispose(self) -> None:
+            return None
+
+    async def fake_gate_evaluation_run(
+        sessions: object,
+        requested_run_id: object,
+        *,
+        baseline_path: Path,
+        thresholds: object,
+    ) -> GateResult:
+        raise ValueError("baseline sample size does not match the run")
+
+    bundle = cli.load_config_bundle(CONFIG_DIRECTORY)
+    monkeypatch.setattr(
+        cli,
+        "Settings",
+        lambda: SimpleNamespace(configuration_directory=CONFIG_DIRECTORY, database_url="sqlite://"),
+    )
+    monkeypatch.setattr(cli, "load_config_bundle", lambda _: bundle)
+    monkeypatch.setattr(cli, "create_engine", lambda _: FakeEngine())
+    monkeypatch.setattr(cli, "create_session_factory", lambda _: object())
+    monkeypatch.setattr(cli, "gate_evaluation_run", fake_gate_evaluation_run)
+
+    exit_code = main(["eval", "gate", str(run_id)])
+
+    assert exit_code == cli.GATE_NOT_COMPARABLE_EXIT_CODE
+    assert exit_code != cli.GATE_BREACHED_EXIT_CODE
+    assert "cannot evaluate gate" in capsys.readouterr().err

@@ -27,8 +27,10 @@
       "recall_at_100": 1.0
     }
   },
-  "recorded_at": "2026-09-06T23:56:48.477741Z",
+  "recorded_at": "2026-09-07T00:56:17.225862Z",
   "run_id": "d10f154f-81a0-496e-8eec-0dcaf8c29746",
+  "sample_size": 50,
+  "seed": 42,
   "split": "test",
   "variant_hashes": {
     "bm25": "d68440286741fdd5d56009c985b644665dab4b3fda6518a0d79237d5c98a8c23",

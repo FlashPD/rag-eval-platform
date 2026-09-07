@@ -1,9 +1,18 @@
 import asyncio
+from datetime import UTC, datetime
+from uuid import UUID, uuid4
 
 import httpx
 
 from ragops.api import app, create_app
-from ragops.contracts import SearchRequest, SearchResponse
+from ragops.contracts import (
+    EvalProgress,
+    EvalRun,
+    EvalRunSpec,
+    EvalRunState,
+    SearchRequest,
+    SearchResponse,
+)
 from ragops.retrieval.errors import DatasetNotIngestedError
 
 
@@ -81,3 +90,126 @@ def test_search_endpoint_maps_missing_dataset_to_not_found() -> None:
 
     assert response.status_code == 404
     assert response.json() == {"detail": "dataset is not ingested: missing"}
+
+
+class FakeEvaluationService:
+    def __init__(self, run: EvalRun | None = None, error: Exception | None = None) -> None:
+        self.run = run
+        self.error = error
+        self.submitted: list[EvalRunSpec] = []
+
+    async def submit(self, spec: EvalRunSpec) -> EvalRun:
+        self.submitted.append(spec)
+        if self.error is not None:
+            raise self.error
+        assert self.run is not None
+        return self.run
+
+    async def get(self, run_id: UUID) -> EvalRun:
+        if self.error is not None:
+            raise self.error
+        assert self.run is not None
+        return self.run
+
+
+def queued_run(spec: EvalRunSpec) -> EvalRun:
+    return EvalRun(
+        id=uuid4(),
+        spec=spec,
+        state=EvalRunState.QUEUED,
+        progress=EvalProgress(),
+        created_at=datetime.now(UTC),
+    )
+
+
+async def call(application: object, method: str, path: str, **kwargs: object) -> httpx.Response:
+    transport = httpx.ASGITransport(app=application)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        return await client.request(method, path, **kwargs)
+
+
+def test_submit_evaluation_queues_a_run_without_executing_it() -> None:
+    spec = EvalRunSpec(dataset="scifact", variants=("bm25",), sample_size=50, seed=42)
+    service = FakeEvaluationService(queued_run(spec))
+    application = create_app(FakeSearchService(), service)
+
+    response = asyncio.run(
+        call(
+            application,
+            "POST",
+            "/v1/evals",
+            json={
+                "dataset": "scifact",
+                "variants": ["bm25"],
+                "sample_size": 50,
+                "seed": 42,
+            },
+        )
+    )
+
+    assert response.status_code == 202
+    body = response.json()
+    assert body["state"] == "queued"
+    assert body["progress"]["completed_queries"] == 0
+    assert response.headers["Location"] == f"/v1/evals/{body['id']}"
+    assert service.submitted == [spec]
+
+
+def test_submit_evaluation_maps_an_unknown_dataset_to_not_found() -> None:
+    service = FakeEvaluationService(error=KeyError("dataset is not configured: nope"))
+    application = create_app(FakeSearchService(), service)
+
+    response = asyncio.run(
+        call(
+            application,
+            "POST",
+            "/v1/evals",
+            json={"dataset": "nope", "variants": ["bm25"]},
+        )
+    )
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "dataset is not configured: nope"}
+
+
+def test_submit_evaluation_rejects_a_spec_the_service_will_not_run() -> None:
+    service = FakeEvaluationService(
+        error=ValueError("retrieval evaluation cannot enable generation")
+    )
+    application = create_app(FakeSearchService(), service)
+
+    response = asyncio.run(
+        call(
+            application,
+            "POST",
+            "/v1/evals",
+            json={
+                "dataset": "scifact",
+                "variants": ["bm25"],
+                "generation_enabled": True,
+                "generator_profile": "default",
+            },
+        )
+    )
+
+    assert response.status_code == 422
+
+
+def test_reading_an_evaluation_run_reports_its_progress() -> None:
+    spec = EvalRunSpec(dataset="scifact", variants=("bm25",))
+    run = queued_run(spec)
+    application = create_app(FakeSearchService(), FakeEvaluationService(run))
+
+    response = asyncio.run(call(application, "GET", f"/v1/evals/{run.id}"))
+
+    assert response.status_code == 200
+    assert response.json()["id"] == str(run.id)
+
+
+def test_reading_a_missing_evaluation_run_is_not_found() -> None:
+    service = FakeEvaluationService(error=KeyError("evaluation run not found: x"))
+    application = create_app(FakeSearchService(), service)
+
+    response = asyncio.run(call(application, "GET", f"/v1/evals/{uuid4()}"))
+
+    assert response.status_code == 404

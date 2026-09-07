@@ -5,9 +5,12 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 
+from pydantic import ValidationError
+
 from ragops.config import ThresholdCatalog
 from ragops.contracts import (
     BaselineDocument,
+    EvalRunSpec,
     EvaluationReport,
     GateMetricResult,
     GateResult,
@@ -28,6 +31,8 @@ def build_baseline(
     return BaselineDocument(
         dataset=report.run.spec.dataset,
         split=report.run.spec.split,
+        sample_size=report.run.spec.sample_size,
+        seed=report.run.spec.seed,
         run_id=report.run.id,
         git_commit=report.run.git_commit,
         recorded_at=datetime.now(UTC),
@@ -44,7 +49,15 @@ def read_baseline(path: Path) -> BaselineDocument:
         raise FileNotFoundError(f"baseline file not found: {path}") from error
     except json.JSONDecodeError as error:
         raise ValueError(f"baseline file is not valid JSON: {path}") from error
-    return BaselineDocument.model_validate(payload)
+    try:
+        return BaselineDocument.model_validate(payload)
+    except ValidationError as error:
+        # A baseline written by an older schema fails here. Name the file, because
+        # the fix is to regenerate it with `ragops eval baseline`, not to debug a
+        # traceback in CI output.
+        raise ValueError(f"baseline file does not match the current schema: {path}\n{error}") from (
+            error
+        )
 
 
 def write_baseline(baseline: BaselineDocument, path: Path) -> None:
@@ -54,19 +67,14 @@ def write_baseline(baseline: BaselineDocument, path: Path) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
-def evaluate_gate(
-    report: EvaluationReport,
-    baseline: BaselineDocument,
-    thresholds: ThresholdCatalog,
-) -> GateResult:
-    """Compare a completed run to its baseline and report every threshold breach.
+def _ensure_comparable(baseline: BaselineDocument, run_spec: EvalRunSpec) -> None:
+    """Reject a comparison whose two sides did not evaluate the same benchmark.
 
-    Only metrics recorded in the baseline that also declare a tolerance are gated.
-    A variant present in the run but absent from the baseline is new and ungated;
-    a baselined variant or metric missing from the run makes the comparison
-    incomplete and is rejected rather than silently passed.
+    A gate only means something when the baseline and the run scored the same
+    queries. Differences in dataset, split, or query sample produce deltas that
+    measure the benchmark rather than the change under review, which is worse
+    than no gate at all because it looks authoritative.
     """
-    run_spec = report.run.spec
     if baseline.dataset != run_spec.dataset:
         raise ValueError(
             "baseline dataset does not match the run: "
@@ -77,6 +85,37 @@ def evaluate_gate(
             "baseline split does not match the run: "
             f"baseline={baseline.split!r}, run={run_spec.split!r}"
         )
+    if baseline.sample_size != run_spec.sample_size:
+        raise ValueError(
+            "baseline sample size does not match the run: "
+            f"baseline={baseline.sample_size}, run={run_spec.sample_size}; "
+            "a full-dataset run and a sampled run are different benchmarks"
+        )
+    # The seed only chooses which queries are sampled. A run with no sample size
+    # evaluates every query, so its seed cannot change the set being compared.
+    if run_spec.sample_size is not None and baseline.seed != run_spec.seed:
+        raise ValueError(
+            "baseline seed does not match the run: "
+            f"baseline={baseline.seed}, run={run_spec.seed}; "
+            "a different seed samples a different set of queries"
+        )
+
+
+def evaluate_gate(
+    report: EvaluationReport,
+    baseline: BaselineDocument,
+    thresholds: ThresholdCatalog,
+) -> GateResult:
+    """Compare a completed run to its baseline and report every threshold breach.
+
+    The run and the baseline must describe the same benchmark; see
+    ``_ensure_comparable``. Only metrics recorded in the baseline that also declare
+    a tolerance are gated. A variant present in the run but absent from the baseline
+    is new and ungated; a baselined variant or metric missing from the run makes the
+    comparison incomplete and is rejected rather than silently passed.
+    """
+    run_spec = report.run.spec
+    _ensure_comparable(baseline, run_spec)
 
     observed = {(summary.variant, summary.metric): summary.mean for summary in report.metrics}
     results: list[GateMetricResult] = []

@@ -2,13 +2,17 @@
 
 import argparse
 import asyncio
+import contextlib
+import logging
+import signal
+import sys
 from collections.abc import Sequence
 from pathlib import Path
 from uuid import UUID
 
 from ragops import __version__
 from ragops.config import Settings, load_config_bundle
-from ragops.contracts import EvalRunSpec
+from ragops.contracts import EVALUATION_JOB_KIND, EvalRunSpec
 from ragops.evaluation import (
     build_run_baseline,
     gate_evaluation_run,
@@ -25,9 +29,12 @@ from ragops.ingestion.service import IngestionService
 from ragops.persistence import create_engine, create_session_factory
 from ragops.provenance import resolve_git_commit, resolve_image_digest
 from ragops.retrieval.factory import build_retrieval_pipeline
+from ragops.worker import JobWorker, build_evaluation_job_handler
 
 DEFAULT_BASELINE_PATH = Path("evals/baselines/main.json")
 DEFAULT_REPORT_DIRECTORY = Path("evals/runs")
+GATE_BREACHED_EXIT_CODE = 1
+GATE_NOT_COMPARABLE_EXIT_CODE = 2
 
 
 def _variant_names(value: str) -> tuple[str, ...]:
@@ -82,6 +89,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     evaluation_baseline.add_argument("run_id", type=UUID)
     evaluation_baseline.add_argument("--output", type=Path, default=DEFAULT_BASELINE_PATH)
+
+    worker = commands.add_parser("worker", help="execute queued evaluation jobs")
+    worker.add_argument("--worker-id")
+    worker.add_argument("--lease-seconds", type=int)
+    worker.add_argument("--poll-interval", type=float)
+    worker.add_argument("--device")
+    worker.add_argument("--once", action="store_true", help="process at most one job, then exit")
     return parser
 
 
@@ -179,17 +193,25 @@ async def _gate_evaluation(arguments: argparse.Namespace) -> int:
     bundle = load_config_bundle(settings.configuration_directory)
     engine = create_engine(settings.database_url)
     try:
-        result = await gate_evaluation_run(
-            create_session_factory(engine),
-            arguments.run_id,
-            baseline_path=arguments.baseline,
-            thresholds=bundle.thresholds,
-        )
+        try:
+            result = await gate_evaluation_run(
+                create_session_factory(engine),
+                arguments.run_id,
+                baseline_path=arguments.baseline,
+                thresholds=bundle.thresholds,
+            )
+        except (FileNotFoundError, KeyError, ValueError) as error:
+            # A gate that cannot compare is not a passing gate, but it is also not a
+            # quality regression. CI needs to tell the two apart: exit 1 means the
+            # numbers got worse, exit 2 means the comparison itself is unusable.
+            message = error.args[0] if isinstance(error, KeyError) else error
+            print(f"cannot evaluate gate: {message}", file=sys.stderr)
+            return GATE_NOT_COMPARABLE_EXIT_CODE
         if arguments.format == "json":
             print(result.model_dump_json(indent=2))
         else:
             print(render_gate_report(result), end="")
-        return 0 if result.passed else 1
+        return 0 if result.passed else GATE_BREACHED_EXIT_CODE
     finally:
         await engine.dispose()
 
@@ -201,6 +223,56 @@ async def _write_baseline(arguments: argparse.Namespace) -> int:
         baseline = await build_run_baseline(create_session_factory(engine), arguments.run_id)
         write_baseline(baseline, arguments.output)
         print(f"wrote baseline for run {baseline.run_id} to {arguments.output}")
+        return 0
+    finally:
+        await engine.dispose()
+
+
+async def _run_worker(arguments: argparse.Namespace) -> int:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    settings = Settings()
+    bundle = load_config_bundle(settings.configuration_directory)
+    engine = create_engine(settings.database_url)
+    try:
+        sessions = create_session_factory(engine)
+        search = build_retrieval_pipeline(
+            bundle,
+            sessions,
+            artifact_root=settings.artifact_directory,
+            device=arguments.device or settings.model_device,
+            model_cache_directory=settings.model_cache_directory,
+        )
+        worker = JobWorker(
+            sessions,
+            handlers={
+                EVALUATION_JOB_KIND: build_evaluation_job_handler(
+                    sessions,
+                    search=search,
+                    datasets=bundle.datasets,
+                    variants=bundle.variants,
+                )
+            },
+            worker_id=arguments.worker_id,
+            lease_seconds=arguments.lease_seconds or settings.worker_lease_seconds,
+            poll_interval_seconds=(
+                arguments.poll_interval or settings.worker_poll_interval_seconds
+            ),
+        )
+        if arguments.once:
+            job = await worker.run_once()
+            print("no job was available" if job is None else job.model_dump_json(indent=2))
+            return 0
+
+        stop = asyncio.Event()
+        loop = asyncio.get_running_loop()
+        for signal_name in (signal.SIGINT, signal.SIGTERM):
+            # Windows event loops do not implement signal handlers; a KeyboardInterrupt
+            # still unwinds the loop there.
+            with contextlib.suppress(NotImplementedError):
+                loop.add_signal_handler(signal_name, stop.set)
+        print(f"worker {worker.worker_id} polling for jobs; press ctrl-c to stop")
+        await worker.run_forever(stop=stop)
+        print(f"worker {worker.worker_id} stopped")
         return 0
     finally:
         await engine.dispose()
@@ -220,5 +292,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return asyncio.run(_gate_evaluation(arguments))
     if arguments.command == "eval" and arguments.evaluation_command == "baseline":
         return asyncio.run(_write_baseline(arguments))
+    if arguments.command == "worker":
+        return asyncio.run(_run_worker(arguments))
     parser.print_help()
     return 0
