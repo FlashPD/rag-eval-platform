@@ -55,5 +55,8 @@ def test_pricing_uses_decimal_arithmetic() -> None:
 
 def test_settings_use_ragops_environment_prefix(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("RAGOPS_DATABASE_URL", "sqlite+aiosqlite:///:memory:")
+    monkeypatch.setenv("RAGOPS_MODEL_CACHE_DIRECTORY", "tmp/model-cache")
 
-    assert Settings().database_url == "sqlite+aiosqlite:///:memory:"
+    settings = Settings()
+    assert settings.database_url == "sqlite+aiosqlite:///:memory:"
+    assert settings.model_cache_directory == Path("tmp/model-cache")

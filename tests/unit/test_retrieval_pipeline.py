@@ -4,8 +4,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID, uuid4
 
-import pytest
-
 from ragops.config import DatasetCatalog, LocalDatasetManifest, VariantRegistry
 from ragops.contracts import (
     DenseStageConfig,
@@ -18,7 +16,6 @@ from ragops.contracts import (
     SparseStageConfig,
     VariantConfig,
 )
-from ragops.retrieval.errors import RetrievalLimitError
 from ragops.retrieval.pipeline import RetrievalPipeline
 from ragops.retrieval.types import StageHit
 
@@ -163,10 +160,20 @@ def test_reranker_reorders_fused_candidates() -> None:
     assert response.hits[0].stage_scores["rerank_score"] == 0.9
 
 
-def test_pipeline_rejects_k_above_reranker_output_limit() -> None:
-    with pytest.raises(RetrievalLimitError, match="exceeds reranker keep"):
-        asyncio.run(
-            build_pipeline(rerank=True).search(
-                SearchRequest(query="question", dataset="fixture", variant="hybrid", k=3)
-            )
+def test_reranking_preserves_retrieval_depth_beyond_keep() -> None:
+    """Reranking reorders the candidate window; it must not shorten the result list.
+
+    Truncating to ``keep`` would cap deep metrics such as Recall@100 at Recall@keep
+    and make a reranked variant look worse than its unreranked parent at depth.
+    """
+    response = asyncio.run(
+        build_pipeline(rerank=True).search(
+            SearchRequest(query="question", dataset="fixture", variant="hybrid", k=3)
         )
+    )
+
+    # keep=2 promotes doc-a and doc-b; doc-c stays below in its fused order.
+    assert [hit.document_id for hit in response.hits] == ["doc-a", "doc-b", "doc-c"]
+    assert [hit.rank for hit in response.hits] == [1, 2, 3]
+    # Every scored candidate keeps its rerank score, including the unpromoted tail.
+    assert [hit.stage_scores["rerank_score"] for hit in response.hits] == [0.9, 0.5, 0.1]

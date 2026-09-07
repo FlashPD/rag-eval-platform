@@ -33,7 +33,13 @@ class EvaluationRunRepository(Protocol):
 
     async def get(self, run_id: UUID) -> EvalRun | None: ...
 
+    async def get_variant_hashes(self, run_id: UUID) -> dict[str, str]: ...
+
     async def set_state(self, run_id: UUID, state: EvalRunState) -> EvalRun: ...
+
+    async def set_progress(
+        self, run_id: UUID, *, completed_queries: int, total_queries: int
+    ) -> EvalRun: ...
 
 
 def _dataset_contract(row: DatasetRow) -> Dataset:
@@ -125,6 +131,14 @@ class SqlAlchemyEvaluationRunRepository:
         row = await self._session.get(EvalRunRow, run_id)
         return _eval_run_contract(row) if row is not None else None
 
+    async def get_variant_hashes(self, run_id: UUID) -> dict[str, str]:
+        rows = await self._session.execute(
+            select(EvalRunVariantRow.name, EvalRunVariantRow.configuration_hash).where(
+                EvalRunVariantRow.eval_run_id == run_id
+            )
+        )
+        return dict(rows.tuples().all())
+
     async def set_state(self, run_id: UUID, state: EvalRunState) -> EvalRun:
         row = await self._session.get(EvalRunRow, run_id)
         if row is None:
@@ -135,6 +149,24 @@ class SqlAlchemyEvaluationRunRepository:
         row.state = state.value
         if state in {EvalRunState.COMPLETED, EvalRunState.FAILED, EvalRunState.CANCELLED}:
             row.completed_at = datetime.now(UTC)
+        await self._session.flush()
+        await self._session.refresh(row)
+        return _eval_run_contract(row)
+
+    async def set_progress(
+        self, run_id: UUID, *, completed_queries: int, total_queries: int
+    ) -> EvalRun:
+        if completed_queries < 0 or total_queries < 0 or completed_queries > total_queries:
+            raise ValueError("evaluation progress must satisfy 0 <= completed <= total")
+        row = await self._session.get(EvalRunRow, run_id)
+        if row is None:
+            raise KeyError(f"evaluation run not found: {run_id}")
+        if completed_queries < row.completed_queries:
+            raise ValueError("evaluation progress cannot decrease")
+        if row.total_queries not in {0, total_queries}:
+            raise ValueError("evaluation total cannot change after it is initialized")
+        row.completed_queries = completed_queries
+        row.total_queries = total_queries
         await self._session.flush()
         await self._session.refresh(row)
         return _eval_run_contract(row)

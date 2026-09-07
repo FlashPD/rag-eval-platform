@@ -5,13 +5,22 @@ from pathlib import Path
 import bm25s
 import httpx
 import pytest
+from sqlalchemy import select
 
 from ragops.api import create_app
 from ragops.config import DatasetCatalog, LocalDatasetManifest, VariantRegistry
-from ragops.contracts import IndexBuildState, SparseStageConfig, VariantConfig
+from ragops.contracts import (
+    EvalRunSpec,
+    EvalRunState,
+    IndexBuildState,
+    SparseStageConfig,
+    VariantConfig,
+)
+from ragops.evaluation import run_retrieval_evaluation
 from ragops.ingestion.artifacts import Bm25sIndexBuilder
 from ragops.ingestion.service import IngestionService
 from ragops.persistence import Base, create_engine, create_session_factory
+from ragops.persistence.models import EvalQueryResultRow
 from ragops.retrieval.pipeline import RetrievalPipeline
 from ragops.retrieval.sparse import Bm25sSparseRetriever
 from ragops.retrieval.store import SqlAlchemySearchDataStore
@@ -96,16 +105,17 @@ def test_ingestion_is_complete_and_resumable(tmp_path: Path) -> None:
         assert resumed.inserted_embeddings == 0
 
         sessions = create_session_factory(engine)
+        variants = VariantRegistry(
+            variants={
+                "bm25": VariantConfig(
+                    name="bm25",
+                    sparse=SparseStageConfig(k=100),
+                )
+            }
+        )
         pipeline = RetrievalPipeline(
             datasets=DatasetCatalog(datasets={"fixture": manifest}),
-            variants=VariantRegistry(
-                variants={
-                    "bm25": VariantConfig(
-                        name="bm25",
-                        sparse=SparseStageConfig(k=100),
-                    )
-                }
-            ),
+            variants=variants,
             store=SqlAlchemySearchDataStore(sessions),
             sparse_retriever=Bm25sSparseRetriever(tmp_path / "artifacts" / "bm25"),
             query_embedders={},
@@ -125,6 +135,24 @@ def test_ingestion_is_complete_and_resumable(tmp_path: Path) -> None:
             )
         assert response.status_code == 200
         assert response.json()["hits"][0]["document_id"] == "doc-a"
+
+        eval_run = await run_retrieval_evaluation(
+            sessions,
+            search=pipeline,
+            datasets=DatasetCatalog(datasets={"fixture": manifest}),
+            variants=variants,
+            spec=EvalRunSpec(dataset="fixture", variants=("bm25",)),
+        )
+        assert eval_run.state is EvalRunState.COMPLETED
+        assert eval_run.progress.completed_queries == 2
+        async with sessions() as session:
+            eval_results = (
+                await session.scalars(
+                    select(EvalQueryResultRow).where(EvalQueryResultRow.eval_run_id == eval_run.id)
+                )
+            ).all()
+        assert len(eval_results) == 2
+        assert all(result.deterministic_scores["mrr_at_10"] == 1.0 for result in eval_results)
 
         await engine.dispose()
 

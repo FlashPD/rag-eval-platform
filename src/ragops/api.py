@@ -35,6 +35,7 @@ def create_app(search_service: SearchExecutor | None = None) -> FastAPI:
                 create_session_factory(engine),
                 artifact_root=settings.artifact_directory,
                 device=settings.model_device,
+                model_cache_directory=settings.model_cache_directory,
             )
         try:
             yield
