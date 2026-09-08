@@ -325,6 +325,8 @@ def test_eval_baseline_command_writes_the_requested_path(
         seed=42,
         run_id=run_id,
         recorded_at=datetime.now(UTC),
+        variant_hashes={"bm25": "v" * 64},
+        index_fingerprints={"bm25": "f" * 64},
         metrics={"bm25": {"ndcg_at_10": 0.6}},
     )
 

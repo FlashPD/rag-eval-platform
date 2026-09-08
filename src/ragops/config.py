@@ -29,6 +29,8 @@ class Settings(BaseSettings):
     model_device: str | None = None
     worker_poll_interval_seconds: PositiveFloat = 1.0
     worker_lease_seconds: PositiveInt = 300
+    otlp_endpoint: str | None = None
+    telemetry_service_name: str = "ragops"
 
 
 class EmbeddingProfile(Contract):

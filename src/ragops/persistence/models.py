@@ -169,6 +169,7 @@ class EvalRunRow(TimestampMixin, Base):
     total_queries: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     git_commit: Mapped[str | None] = mapped_column(String(64))
     image_digest: Mapped[str | None] = mapped_column(String(255))
+    index_fingerprints: Mapped[dict[str, str]] = mapped_column(JSON, nullable=False, default=dict)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 

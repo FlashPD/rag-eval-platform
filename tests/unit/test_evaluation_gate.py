@@ -45,6 +45,7 @@ def report_for(
         state=EvalRunState.COMPLETED,
         progress=EvalProgress(completed_queries=1, total_queries=1),
         git_commit="abc123",
+        index_fingerprints={"bm25": "f" * 64},
         created_at=now,
         completed_at=now,
     )
@@ -79,6 +80,8 @@ def baseline_for(
         seed=seed,
         run_id=uuid4(),
         recorded_at=datetime.now(UTC),
+        variant_hashes={"bm25": "v" * 64},
+        index_fingerprints={"bm25": "f" * 64},
         metrics={"bm25": scores},
     )
 
@@ -136,16 +139,29 @@ def test_gate_rejects_a_baseline_for_another_dataset() -> None:
         )
 
 
+def test_gate_rejects_a_different_index_fingerprint() -> None:
+    baseline = baseline_for({"ndcg_at_10": 0.60})
+    baseline = baseline.model_copy(update={"index_fingerprints": {"bm25": "0" * 64}})
+
+    with pytest.raises(ValueError, match="index fingerprints do not match"):
+        evaluate_gate(
+            report_for({"ndcg_at_10": 0.60}),
+            baseline,
+            THRESHOLDS,
+        )
+
+
 def test_baseline_round_trips_through_a_committed_file(tmp_path: Path) -> None:
     report = report_for({"ndcg_at_10": 0.60, "recall_at_10": 0.80})
-    baseline = build_baseline(report, variant_hashes={"bm25": "hash-1"})
+    baseline = build_baseline(report, variant_hashes={"bm25": "h" * 64})
     path = tmp_path / "baselines" / "main.json"
     write_baseline(baseline, path)
 
     assert read_baseline(path) == baseline
     assert baseline.run_id == report.run.id
     assert baseline.git_commit == "abc123"
-    assert baseline.variant_hashes == {"bm25": "hash-1"}
+    assert baseline.variant_hashes == {"bm25": "h" * 64}
+    assert baseline.index_fingerprints == {"bm25": "f" * 64}
     assert baseline.metrics == {"bm25": {"ndcg_at_10": 0.60, "recall_at_10": 0.80}}
     assert json.loads(path.read_text())["dataset"] == "scifact"
 
@@ -160,7 +176,7 @@ def test_reading_a_malformed_baseline_reports_the_path(tmp_path: Path) -> None:
 
 def test_a_gated_run_round_trips_from_its_own_baseline() -> None:
     report = report_for({"ndcg_at_10": 0.6712})
-    baseline = build_baseline(report, variant_hashes={"bm25": "hash-1"})
+    baseline = build_baseline(report, variant_hashes={"bm25": "h" * 64})
 
     result = evaluate_gate(report, baseline, THRESHOLDS)
 
@@ -211,7 +227,7 @@ def test_gate_ignores_the_seed_when_every_query_is_evaluated() -> None:
 def test_baseline_records_the_sample_it_was_measured_on() -> None:
     report = report_for({"ndcg_at_10": 0.60}, sample_size=50, seed=42)
 
-    baseline = build_baseline(report, variant_hashes={"bm25": "hash-1"})
+    baseline = build_baseline(report, variant_hashes={"bm25": "h" * 64})
 
     assert baseline.sample_size == 50
     assert baseline.seed == 42
@@ -228,6 +244,7 @@ def test_reading_a_baseline_from_an_older_schema_names_the_file(tmp_path: Path) 
                 "split": "test",
                 "run_id": str(uuid4()),
                 "recorded_at": datetime.now(UTC).isoformat(),
+                "index_fingerprints": {"bm25": "f" * 64},
                 "metrics": {"bm25": {"ndcg_at_10": 0.6}},
             }
         ),

@@ -87,6 +87,7 @@ class EvalRun(Contract):
     progress: EvalProgress
     git_commit: str | None = None
     image_digest: str | None = None
+    index_fingerprints: dict[str, str] = Field(default_factory=dict)
     created_at: datetime
     completed_at: datetime | None = None
 
@@ -168,7 +169,7 @@ class BaselineDocument(Contract):
     produced each number stays attributable.
     """
 
-    version: Literal[1] = 1
+    version: Literal[2] = 2
     dataset: str = Field(min_length=1)
     split: str = Field(min_length=1)
     sample_size: int | None = Field(default=None, gt=0)
@@ -177,6 +178,7 @@ class BaselineDocument(Contract):
     git_commit: str | None = None
     recorded_at: datetime
     variant_hashes: dict[str, str] = Field(default_factory=dict)
+    index_fingerprints: dict[str, str] = Field(min_length=1)
     metrics: dict[str, dict[str, float]] = Field(min_length=1)
 
     @model_validator(mode="after")
@@ -186,6 +188,20 @@ class BaselineDocument(Contract):
                 raise ValueError("baseline variant names cannot be empty")
             if not scores:
                 raise ValueError(f"baseline variant {variant!r} records no metrics")
+        metric_variants = set(self.metrics)
+        if set(self.variant_hashes) != metric_variants:
+            raise ValueError("baseline variant hashes must cover exactly the baselined variants")
+        if set(self.index_fingerprints) != metric_variants:
+            raise ValueError(
+                "baseline index fingerprints must cover exactly the baselined variants"
+            )
+        for label, hashes in (
+            ("variant configuration", self.variant_hashes),
+            ("index fingerprint", self.index_fingerprints),
+        ):
+            invalid = [variant for variant, value in hashes.items() if len(value) != 64]
+            if invalid:
+                raise ValueError(f"baseline {label} hashes must be 64 characters: {invalid}")
         return self
 
 

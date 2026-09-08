@@ -35,6 +35,10 @@ class EvaluationRunRepository(Protocol):
 
     async def get_variant_hashes(self, run_id: UUID) -> dict[str, str]: ...
 
+    async def pin_index_fingerprint(
+        self, run_id: UUID, *, variant: str, fingerprint: str
+    ) -> EvalRun: ...
+
     async def set_state(self, run_id: UUID, state: EvalRunState) -> EvalRun: ...
 
     async def set_progress(
@@ -64,6 +68,7 @@ def _eval_run_contract(row: EvalRunRow) -> EvalRun:
         ),
         git_commit=row.git_commit,
         image_digest=row.image_digest,
+        index_fingerprints=row.index_fingerprints,
         created_at=as_utc(row.created_at),
         completed_at=optional_as_utc(row.completed_at),
     )
@@ -138,6 +143,29 @@ class SqlAlchemyEvaluationRunRepository:
             )
         )
         return dict(rows.tuples().all())
+
+    async def pin_index_fingerprint(
+        self, run_id: UUID, *, variant: str, fingerprint: str
+    ) -> EvalRun:
+        """Pin the first index seen for a variant and reject later drift."""
+        row = await self._session.get(EvalRunRow, run_id)
+        if row is None:
+            raise KeyError(f"evaluation run not found: {run_id}")
+        spec = EvalRunSpec.model_validate(row.spec)
+        if variant not in spec.variants:
+            raise ValueError(f"cannot pin an index for unknown run variant {variant!r}")
+        fingerprints = dict(row.index_fingerprints)
+        existing = fingerprints.get(variant)
+        if existing is not None and existing != fingerprint:
+            raise ValueError(
+                f"evaluation index changed after run creation for {variant}: "
+                f"expected={existing}, observed={fingerprint}"
+            )
+        fingerprints[variant] = fingerprint
+        row.index_fingerprints = fingerprints
+        await self._session.flush()
+        await self._session.refresh(row)
+        return _eval_run_contract(row)
 
     async def set_state(self, run_id: UUID, state: EvalRunState) -> EvalRun:
         row = await self._session.get(EvalRunRow, run_id)

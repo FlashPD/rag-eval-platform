@@ -52,6 +52,9 @@ def test_async_repositories_round_trip_contracts() -> None:
             queued = await runs.set_state(run.id, EvalRunState.QUEUED)
             assert queued.state is EvalRunState.QUEUED
 
+            pinned = await runs.pin_index_fingerprint(run.id, variant="bm25", fingerprint="f" * 64)
+            assert pinned.index_fingerprints == {"bm25": "f" * 64}
+
             with pytest.raises(ValueError, match="queued -> retrieving"):
                 await runs.set_state(run.id, EvalRunState.RETRIEVING)
 

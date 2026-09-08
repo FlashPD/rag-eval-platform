@@ -17,6 +17,7 @@ from ragops.retrieval.rerank import Reranker
 from ragops.retrieval.sparse import SparseRetriever
 from ragops.retrieval.store import SearchDataStore
 from ragops.retrieval.types import StageHit
+from ragops.telemetry import record_retrieval_stage
 
 
 class SearchExecutor(Protocol):
@@ -43,14 +44,26 @@ class RetrievalPipeline:
         self._tracer = get_tracer(__name__)
 
     @asynccontextmanager
-    async def _stage(self, name: str, timings: list[StageTiming]) -> AsyncIterator[None]:
+    async def _stage(
+        self,
+        name: str,
+        timings: list[StageTiming],
+        *,
+        dataset: str,
+        variant: str,
+    ) -> AsyncIterator[None]:
         started = perf_counter()
         with self._tracer.start_as_current_span(name):
             try:
                 yield
             finally:
-                timings.append(
-                    StageTiming(stage=name, duration_ms=(perf_counter() - started) * 1_000)
+                duration_ms = (perf_counter() - started) * 1_000
+                timings.append(StageTiming(stage=name, duration_ms=duration_ms))
+                record_retrieval_stage(
+                    stage=name,
+                    duration_ms=duration_ms,
+                    dataset=dataset,
+                    variant=variant,
                 )
 
     async def search(self, request: SearchRequest) -> SearchResponse:
@@ -71,7 +84,12 @@ class RetrievalPipeline:
             dense_hits: tuple[StageHit, ...] = ()
 
             if variant.sparse is not None:
-                async with self._stage("sparse_retrieve", timings):
+                async with self._stage(
+                    "sparse_retrieve",
+                    timings,
+                    dataset=request.dataset,
+                    variant=request.variant,
+                ):
                     sparse_hits = await self._sparse_retriever.retrieve(
                         request.query,
                         artifact_hash=index_version.bm25_artifact_hash,
@@ -86,7 +104,12 @@ class RetrievalPipeline:
                     raise CompatibleIndexNotFoundError(
                         f"query embedder is not configured: {variant.dense.model}"
                     ) from error
-                async with self._stage("dense_embed_query", timings):
+                async with self._stage(
+                    "dense_embed_query",
+                    timings,
+                    dataset=request.dataset,
+                    variant=request.variant,
+                ):
                     query_embedding = await embedder.encode_query(request.query)
                 if (
                     embedder.model_id != index_version.embedding_model
@@ -96,7 +119,12 @@ class RetrievalPipeline:
                     raise CompatibleIndexNotFoundError(
                         "query embedder does not match the selected index configuration"
                     )
-                async with self._stage("dense_retrieve", timings):
+                async with self._stage(
+                    "dense_retrieve",
+                    timings,
+                    dataset=request.dataset,
+                    variant=request.variant,
+                ):
                     dense_hits = await self._store.dense_search(
                         index_version.id,
                         query_embedding,
@@ -107,7 +135,9 @@ class RetrievalPipeline:
             if variant.fusion is not None:
                 if variant.fusion.method != "rrf":
                     raise ValueError(f"unsupported fusion method: {variant.fusion.method}")
-                async with self._stage("fuse", timings):
+                async with self._stage(
+                    "fuse", timings, dataset=request.dataset, variant=request.variant
+                ):
                     current = reciprocal_rank_fusion((sparse_hits, dense_hits), k=variant.fusion.k)
                 self._record_scores(stage_scores, "fused_score", current)
             else:
@@ -116,7 +146,9 @@ class RetrievalPipeline:
             if variant.rerank is not None:
                 candidate_hits = current[: variant.rerank.candidates]
                 candidate_ids = [hit.document_id for hit in candidate_hits]
-                async with self._stage("rerank", timings):
+                async with self._stage(
+                    "rerank", timings, dataset=request.dataset, variant=request.variant
+                ):
                     documents = await self._store.load_documents(
                         index_version.corpus_version_id, candidate_ids
                     )
@@ -161,7 +193,9 @@ class RetrievalPipeline:
                 self._record_scores(stage_scores, "rerank_score", reranked)
 
             final_hits = current[: request.k]
-            async with self._stage("hydrate_results", timings):
+            async with self._stage(
+                "hydrate_results", timings, dataset=request.dataset, variant=request.variant
+            ):
                 documents = await self._store.load_documents(
                     index_version.corpus_version_id,
                     [hit.document_id for hit in final_hits],
@@ -183,6 +217,7 @@ class RetrievalPipeline:
                 timings=tuple(timings),
                 trace_id=trace_id,
                 variant_hash=variant.configuration_hash,
+                index_fingerprint=index_version.fingerprint,
             )
 
     @staticmethod

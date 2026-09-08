@@ -24,3 +24,50 @@ jobs:
           python -m pip install --no-deps -e .
       - name: Run checks
         run: make check PYTHON=python
+
+  evaluation-gate:
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: pgvector/pgvector:0.8.1-pg16
+        env:
+          POSTGRES_DB: ragops
+          POSTGRES_USER: ragops
+          POSTGRES_PASSWORD: ragops
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ragops -d ragops"
+          --health-interval 3s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      RAGOPS_ENVIRONMENT: test
+      RAGOPS_DATABASE_URL: postgresql+asyncpg://ragops:ragops@localhost:5432/ragops
+      RAGOPS_MODEL_DEVICE: cpu
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Cache model weights
+        uses: actions/cache@v4
+        with:
+          path: artifacts/models
+          key: ${{ runner.os }}-ragops-models-${{ hashFiles('config/models.yaml') }}
+      - name: Install project
+        run: |
+          python -m pip install -r requirements-dev.lock
+          python -m pip install --no-deps -e .
+      - name: Migrate and ingest smoke fixture
+        run: |
+          python -m alembic upgrade head
+          ragops ingest --dataset fixture --device cpu
+      - name: Run retrieval regression gate
+        run: |
+          ragops eval run --dataset fixture --variants bm25 --seed 42 > smoke-run.json
+          RUN_ID=$(python -c 'import json; print(json.load(open("smoke-run.json"))["id"])')
+          ragops eval gate "$RUN_ID" --baseline evals/baselines/fixture.json

@@ -173,8 +173,18 @@ async def gate_evaluation_run(
     thresholds: ThresholdCatalog,
 ) -> GateResult:
     """Compare a completed run against the committed baseline for its dataset."""
-    report, _ = await _load_report_and_hashes(sessions, run_id)
-    return evaluate_gate(report, read_baseline(baseline_path), thresholds)
+    report, variant_hashes = await _load_report_and_hashes(sessions, run_id)
+    baseline = read_baseline(baseline_path)
+    mismatches = {
+        variant: (configuration_hash, variant_hashes.get(variant))
+        for variant, configuration_hash in baseline.variant_hashes.items()
+        if variant_hashes.get(variant) != configuration_hash
+    }
+    if mismatches:
+        raise ValueError(
+            f"baseline variant configuration hashes do not match the run: mismatches={mismatches}"
+        )
+    return evaluate_gate(report, baseline, thresholds)
 
 
 class EvaluationService(Protocol):

@@ -21,6 +21,7 @@ from ragops.retrieval.errors import (
 from ragops.retrieval.factory import build_retrieval_pipeline
 from ragops.retrieval.pipeline import SearchExecutor
 from ragops.schemas import HealthResponse
+from ragops.telemetry import configure_telemetry, instrument_fastapi, prometheus_response
 
 
 def create_app(
@@ -29,13 +30,15 @@ def create_app(
 ) -> FastAPI:
     """Build the FastAPI application."""
 
+    settings = Settings()
+    configure_telemetry(settings)
+
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         engine: AsyncEngine | None = None
         needs_search = application.state.search_service is None
         needs_evaluation = application.state.evaluation_service is None
         if needs_search or needs_evaluation:
-            settings = Settings()
             bundle = load_config_bundle(settings.configuration_directory)
             engine = create_engine(settings.database_url)
             sessions = create_session_factory(engine)
@@ -68,6 +71,7 @@ def create_app(
     )
     application.state.search_service = search_service
     application.state.evaluation_service = evaluation_service
+    instrument_fastapi(application)
 
     @application.get("/healthz", tags=["operations"])
     async def health() -> HealthResponse:
@@ -78,6 +82,11 @@ def create_app(
     async def readiness() -> HealthResponse:
         """Report whether the service is ready to accept requests."""
         return HealthResponse(status="ok")
+
+    @application.get("/metrics", tags=["operations"], include_in_schema=False)
+    async def metrics() -> Response:
+        """Expose process and retrieval metrics for Prometheus."""
+        return prometheus_response()
 
     @application.post("/v1/search", tags=["retrieval"])
     async def search(request: SearchRequest) -> SearchResponse:

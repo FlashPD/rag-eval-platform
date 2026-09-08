@@ -253,6 +253,11 @@ def render_markdown_report(report: EvaluationReport) -> str:
         f"- Variants: {', '.join(f'`{variant}`' for variant in run.spec.variants)}",
         f"- Seed: `{run.spec.seed}`",
         f"- Results: `{run.progress.completed_queries}`",
+        "- Indexes: "
+        + ", ".join(
+            f"`{variant}`=`{fingerprint}`"
+            for variant, fingerprint in sorted(run.index_fingerprints.items())
+        ),
         "",
         "## Retrieval quality",
         "",

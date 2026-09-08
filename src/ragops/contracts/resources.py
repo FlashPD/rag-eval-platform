@@ -1,5 +1,7 @@
 """Dataset and index contracts."""
 
+import hashlib
+import json
 from datetime import datetime
 from enum import StrEnum
 from typing import Literal
@@ -44,6 +46,25 @@ class IndexVersion(IndexVersionSpec):
     embedded_document_count: int = Field(ge=0)
     created_at: datetime
     completed_at: datetime | None = None
+
+    @property
+    def fingerprint(self) -> str:
+        """Return a portable identity for the corpus and every index artifact.
+
+        The database UUID is deliberately excluded because rebuilding identical
+        data in CI creates a different UUID. A fingerprint must survive that move.
+        """
+        payload = {
+            "corpus_hash": self.corpus_hash,
+            "configuration_hash": self.configuration_hash,
+            "embedding_model": self.embedding_model,
+            "dimension": self.dimension,
+            "normalized": self.normalized,
+            "hnsw_parameters": self.hnsw_parameters,
+            "bm25_artifact_hash": self.bm25_artifact_hash,
+        }
+        canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(canonical.encode()).hexdigest()
 
 
 class DocumentEmbedding(Contract):

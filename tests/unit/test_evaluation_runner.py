@@ -65,6 +65,7 @@ class FakeSearchExecutor:
             timings=(StageTiming(stage="sparse_retrieve", duration_ms=2.5),),
             trace_id=uuid4().hex,
             variant_hash=self._variants.get(request.variant).configuration_hash,
+            index_fingerprint="f" * 64,
         )
 
 
@@ -165,6 +166,7 @@ def test_runner_executes_variants_and_persists_metrics() -> None:
         assert completed.state is EvalRunState.COMPLETED
         assert completed.progress.completed_queries == 4
         assert completed.progress.total_queries == 4
+        assert completed.index_fingerprints == {"bm25": "f" * 64, "reranked": "f" * 64}
         assert len(search.requests) == 4
         # Every variant is evaluated at the same depth, including reranked ones, so
         # depth-100 metrics stay comparable across variants.
