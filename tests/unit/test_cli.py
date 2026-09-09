@@ -61,6 +61,17 @@ def test_eval_run_parser_rejects_duplicate_variants() -> None:
         )
 
 
+def test_eval_baseline_paths_default_to_the_run_dataset() -> None:
+    run_id = uuid4()
+    parser = build_parser()
+
+    gate_arguments = parser.parse_args(["eval", "gate", str(run_id)])
+    baseline_arguments = parser.parse_args(["eval", "baseline", str(run_id)])
+
+    assert gate_arguments.baseline is None
+    assert baseline_arguments.output is None
+
+
 def test_eval_run_command_builds_and_executes_spec(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -349,6 +360,52 @@ def test_eval_baseline_command_writes_the_requested_path(
     assert exit_code == 0
     assert read_baseline(output) == baseline
     assert str(output) in capsys.readouterr().out
+
+
+def test_eval_baseline_command_defaults_to_the_dataset_file(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    run_id = uuid4()
+    baseline = BaselineDocument(
+        dataset="nfcorpus",
+        split="test",
+        sample_size=50,
+        seed=42,
+        run_id=run_id,
+        git_commit="abc123",
+        recorded_at=datetime.now(UTC),
+        variant_hashes={"bm25": "h" * 64},
+        index_fingerprints={"bm25": "f" * 64},
+        metrics={"bm25": {"ndcg_at_10": 0.5}},
+    )
+
+    async def fake_build_run_baseline(sessions: object, requested: object) -> BaselineDocument:
+        assert requested == run_id
+        return baseline
+
+    monkeypatch.chdir(tmp_path)
+
+    class FakeEngine:
+        async def dispose(self) -> None:
+            return None
+
+    monkeypatch.setattr(
+        cli,
+        "Settings",
+        lambda: SimpleNamespace(database_url="sqlite+aiosqlite:///:memory:"),
+    )
+    monkeypatch.setattr(cli, "create_engine", lambda _: FakeEngine())
+    monkeypatch.setattr(cli, "create_session_factory", lambda _: object())
+    monkeypatch.setattr(cli, "build_run_baseline", fake_build_run_baseline)
+
+    exit_code = main(["eval", "baseline", str(run_id)])
+
+    output = tmp_path / "evals" / "baselines" / "nfcorpus.json"
+    assert exit_code == 0
+    assert read_baseline(output) == baseline
+    assert "evals/baselines/nfcorpus.json" in capsys.readouterr().out
 
 
 def test_eval_gate_command_separates_unusable_baselines_from_regressions(

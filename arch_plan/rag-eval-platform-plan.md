@@ -54,7 +54,7 @@ flowchart TD
 2. `ragops ingest --dataset scifact` downloads the BEIR archive, verifies its checksum, writes documents, builds the BM25 artifact, computes embeddings, and records an immutable `index_version`.
 3. `ragops eval run --dataset scifact --variants bm25,dense,hybrid_rrf,hybrid_rrf_rerank` creates an evaluation run and executes it in-process or via the worker.
 4. `ragops eval report <run_id>` renders a Markdown table with metrics, confidence intervals, latency percentiles, and cost, ready to paste into the README.
-5. `ragops eval gate <run_id> --baseline evals/baselines/main.json` compares against the committed baseline and exits non-zero on regression.
+5. `ragops eval gate <run_id>` selects `evals/baselines/<dataset>.json`, compares against the committed baseline, and exits non-zero on regression. An explicit `--baseline` path remains available for experiments.
 
 ### Reviewer workflow
 
@@ -157,7 +157,7 @@ Evaluation is a library used by the CLI, the worker, and CI. It accepts any obje
 
 ### 3.5 Regression gate
 
-`evals/baselines/main.json` holds committed metrics per dataset and variant with the run identifier that produced them. `evals/thresholds.yaml` declares tolerances, for example a maximum absolute drop of 0.01 in nDCG@10 and 2 points in faithfulness. The gate compares a new run to the baseline and fails on any breach. Baselines change only through a pull request that includes the new run identifier and a justification, which is the same discipline as updating a snapshot test.
+`evals/baselines/<dataset>.json` holds committed metrics per variant with the run identifier, fixed query sample, variant hashes, and index fingerprints that produced them. `config/thresholds.yaml` declares tolerances, for example a maximum absolute drop of 0.01 in nDCG@10. The gate selects the run's dataset file by default, compares the run to that baseline, and fails on any breach. Baselines change only through a pull request that includes the new run identifier and a justification, which is the same discipline as updating a snapshot test.
 
 CI runs two tiers. The pull-request tier is retrieval-only on a fixed 50-query slice per dataset with cached embeddings, finishing in a few minutes with no LLM spend. The scheduled tier runs full retrieval plus generation and judging on a 200-query sample per dataset, publishes the report as a workflow artifact, and opens an issue on regression.
 

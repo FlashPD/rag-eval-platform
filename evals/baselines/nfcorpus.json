@@ -1,0 +1,48 @@
+{
+  "dataset": "nfcorpus",
+  "git_commit": "1cf6fdb49c34ca736d714de0143424555b1b61e0",
+  "index_fingerprints": {
+    "bm25": "e753dd39de1e9945bace0ab21356441c697d5bc2a160df4da0d55638f95f9d8b",
+    "dense_bge_small": "e753dd39de1e9945bace0ab21356441c697d5bc2a160df4da0d55638f95f9d8b",
+    "hybrid_rrf": "e753dd39de1e9945bace0ab21356441c697d5bc2a160df4da0d55638f95f9d8b",
+    "hybrid_rrf_rerank": "e753dd39de1e9945bace0ab21356441c697d5bc2a160df4da0d55638f95f9d8b"
+  },
+  "metrics": {
+    "bm25": {
+      "mrr_at_10": 0.5353333333333333,
+      "ndcg_at_10": 0.30567802823131984,
+      "recall_at_10": 0.1634559667547925,
+      "recall_at_100": 0.28770992800990913
+    },
+    "dense_bge_small": {
+      "mrr_at_10": 0.5412222222222222,
+      "ndcg_at_10": 0.3397384639051931,
+      "recall_at_10": 0.15822822974332026,
+      "recall_at_100": 0.3029618919266822
+    },
+    "hybrid_rrf": {
+      "mrr_at_10": 0.5946666666666667,
+      "ndcg_at_10": 0.3491590857084803,
+      "recall_at_10": 0.17594628561370423,
+      "recall_at_100": 0.31600404594473086
+    },
+    "hybrid_rrf_rerank": {
+      "mrr_at_10": 0.5771666666666667,
+      "ndcg_at_10": 0.35649770834153977,
+      "recall_at_10": 0.1796960055824424,
+      "recall_at_100": 0.31600404594473086
+    }
+  },
+  "recorded_at": "2026-09-08T14:33:28.977865Z",
+  "run_id": "bc29122e-d2c5-4286-b7f2-cfae82bae58f",
+  "sample_size": 50,
+  "seed": 42,
+  "split": "test",
+  "variant_hashes": {
+    "bm25": "d68440286741fdd5d56009c985b644665dab4b3fda6518a0d79237d5c98a8c23",
+    "dense_bge_small": "b4a88567fec6c5b6caf11eadec851a885a20ac41a3c22eac3a5790b53b43722e",
+    "hybrid_rrf": "e954dc6dd5448cbaa08ebc0e828918015f38b67d4fa68764417aa1ae057291a3",
+    "hybrid_rrf_rerank": "947c52274bbc63a4e97cee86c00b8913c9fed64a983540dcf3391ee1f71dbc68"
+  },
+  "version": 2
+}

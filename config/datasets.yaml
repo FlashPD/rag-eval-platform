@@ -14,3 +14,21 @@ datasets:
     url: https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/scifact.zip
     checksum_algorithm: md5
     checksum: 5f7d1de60b170fc8027bb7898e2efca1
+
+  nfcorpus:
+    source: remote
+    version: beir-2022-06-29
+    default_split: test
+    license_name: CC BY-SA 4.0
+    url: https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/nfcorpus.zip
+    checksum_algorithm: md5
+    checksum: a89dba18a62ef92f7d323ec890a0d38d
+
+  fiqa:
+    source: remote
+    version: beir-2022-06-29
+    default_split: test
+    license_name: FiQA 2018 non-commercial research use
+    url: https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/fiqa.zip
+    checksum_algorithm: md5
+    checksum: 17918ed23cd04fb15047f73e6c3bd9d9
