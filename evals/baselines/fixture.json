@@ -1,0 +1,24 @@
+{
+  "dataset": "fixture",
+  "git_commit": "1421ab7ebedb7f1a0b53fa59f615d3b2531245ee",
+  "index_fingerprints": {
+    "bm25": "92226f4611a74d168daf0cba26db455fe1ce3584068a48efa3778a9b3c6449e8"
+  },
+  "metrics": {
+    "bm25": {
+      "mrr_at_10": 1.0,
+      "ndcg_at_10": 1.0,
+      "recall_at_10": 1.0,
+      "recall_at_100": 1.0
+    }
+  },
+  "recorded_at": "2026-09-08T01:00:33.383568Z",
+  "run_id": "676d0c87-6de5-45f2-bfe7-76ea37724135",
+  "sample_size": null,
+  "seed": 42,
+  "split": "test",
+  "variant_hashes": {
+    "bm25": "d68440286741fdd5d56009c985b644665dab4b3fda6518a0d79237d5c98a8c23"
+  },
+  "version": 2
+}

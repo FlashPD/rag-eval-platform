@@ -133,7 +133,7 @@ SciFact is fully ingested against live PostgreSQL at 5,183 documents, 300 querie
 with all 5,183 embeddings persisted and the index version marked ready. All four retrieval variants
 have been evaluated across the complete test set with real model weights, and evaluations have been
 submitted over HTTP and executed by a worker end to end. The checked-in `fixtures/tiny-beir` corpus
-backs the integration tests and needs no download. The suite passes 96 tests along with Ruff, strict
+backs the integration tests and needs no download. The suite passes 98 tests along with Ruff, strict
 mypy, dependency, migration-head, and OpenAPI checks.
 
 ## Getting started
@@ -178,6 +178,44 @@ make db-upgrade
 The first real ingestion downloads the configured sentence-transformer weights into the artifact
 directory. Re-running an unchanged ingestion reuses persisted documents, qrels, BM25 artifacts, and
 embeddings, and an interrupted one resumes from its last committed batch.
+
+### Docker Compose on macOS
+
+A GPU is not required. The default image uses CPU inference and builds natively on both Apple
+Silicon (`arm64`) and Intel/NVIDIA hosts (`amd64`). Install Docker Desktop, give it at least 8 GB of
+memory, and start the core stack:
+
+```bash
+make stack-up
+docker compose ps
+```
+
+This builds the non-root `ragops` image, migrates PostgreSQL, and starts the API, worker,
+OpenTelemetry Collector, Tempo, Prometheus, and Grafana. The local endpoints are:
+
+| Service | URL |
+|---|---|
+| API | `http://localhost:8000` |
+| PostgreSQL | `localhost:5433` |
+| Prometheus | `http://localhost:9090` |
+| Grafana | `http://localhost:3000` (admin/admin) |
+| Tempo API | `http://localhost:3200` |
+
+The first image build downloads the CPU PyTorch stack and can take several minutes. Model weights
+are downloaded on the first ingestion and persist under `artifacts/models`. Reranking is much slower
+on CPU than on an NVIDIA GPU, but this affects evaluation runtime rather than Docker correctness.
+
+Langfuse v4 and its ClickHouse, Redis, MinIO, and PostgreSQL dependencies are an optional profile
+because the full stack needs substantially more memory. Allocate at least 16 GB to Docker Desktop
+before starting it:
+
+```bash
+make stack-up-full
+```
+
+Langfuse is then available at `http://localhost:3001`. The credentials embedded in `compose.yaml`
+are intentionally local-development values and must never be reused in a deployed environment.
+Stop either stack with `make stack-down`; volumes are retained.
 
 ### Search
 
@@ -258,6 +296,16 @@ the run but absent from the baseline is treated as new and ungated, while a base
 from the run is rejected rather than silently passed. Baselines are updated the way a snapshot test
 is: through a reviewed pull request that carries the new run identifier and a justification.
 
+Every run also pins a content-derived index fingerprint per variant. The fingerprint covers the
+corpus, embedding and HNSW configuration, and BM25 artifact; unlike a database UUID it is stable
+when an identical index is rebuilt in CI. The gate rejects a different fingerprint or variant
+configuration hash before comparing scores.
+
+The pull-request workflow exercises this path end to end against the checked-in two-query fixture:
+it starts pgvector, applies migrations, ingests and indexes the fixture, runs BM25, and gates the
+result against `evals/baselines/fixture.json`. This is a fast correctness canary; the 50-query
+SciFact baseline remains the quality regression benchmark used for retrieval changes.
+
 ### Queued runs and workers
 
 `eval run` executes in the current process, which suits a laptop and CI. For anything longer, the
@@ -289,12 +337,15 @@ flight finishes.
 
 ## Not built yet
 
-Phase 1 is complete except for its packaging: a Dockerfile and a Compose stack (PostgreSQL, API,
-worker, OpenTelemetry Collector, Prometheus, Grafana, Tempo, Langfuse), and the pull-request
-workflow that runs `eval gate` in CI. Beyond that, generation and LLM-as-judge scoring, the online
-evaluation sampler, the NFCorpus and FiQA corpora, and the Terraform path to ECS are all still
-ahead. Runs record an image digest but not yet an index version, so the gate cannot currently detect
-a corpus re-ingested underneath an unchanged dataset name.
+The CPU-first Docker image, core Compose stack, optional full Langfuse profile, provisioned service
+dashboard, OpenTelemetry trace export, Prometheus metrics, pull-request smoke gate, and portable
+index provenance are implemented. The Compose stack still needs a runtime validation on a machine
+with Docker Desktop; static and application tests do not pull or start its service images.
+
+Generation and LLM-as-judge scoring, the online evaluation sampler, the NFCorpus and FiQA corpora,
+and the Terraform path to ECS are still ahead. The PR workflow uses the tiny fixture for fast
+end-to-end coverage; promoting the 50-query SciFact gate into hosted CI will require a durable cache
+for its corpus indexes and embeddings so every pull request does not rebuild them.
 
 ## Design
 

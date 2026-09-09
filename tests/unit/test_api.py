@@ -23,6 +23,7 @@ class FakeSearchService:
             timings=(),
             trace_id="a" * 32,
             variant_hash="b" * 64,
+            index_fingerprint="c" * 64,
         )
 
 
@@ -49,6 +50,15 @@ def test_readiness() -> None:
 
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+
+
+def test_prometheus_metrics_include_http_requests() -> None:
+    asyncio.run(get("/healthz"))
+
+    response = asyncio.run(get("/metrics"))
+
+    assert response.status_code == 200
+    assert "ragops_http_server_requests_total" in response.text
 
 
 def test_search_endpoint_returns_typed_response() -> None:

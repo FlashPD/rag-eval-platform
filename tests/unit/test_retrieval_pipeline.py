@@ -147,6 +147,7 @@ def test_hybrid_pipeline_returns_scores_documents_and_timings() -> None:
         "hydrate_results",
     ]
     assert len(response.trace_id) == 32
+    assert response.index_fingerprint == FakeStore().index.fingerprint
 
 
 def test_reranker_reorders_fused_candidates() -> None:

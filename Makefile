@@ -1,4 +1,4 @@
-.PHONY: install format lint typecheck test check run eval-run db-upgrade db-downgrade
+.PHONY: install format lint typecheck test check run eval-run db-upgrade db-downgrade stack-up stack-up-full stack-down stack-logs
 
 PYTHON := .venv/bin/python
 RAGOPS := .venv/bin/ragops
@@ -38,3 +38,15 @@ db-upgrade:
 
 db-downgrade:
 	$(PYTHON) -m alembic downgrade -1
+
+stack-up:
+	docker compose up --build -d
+
+stack-up-full:
+	docker compose --profile langfuse up --build -d
+
+stack-down:
+	docker compose down
+
+stack-logs:
+	docker compose logs --follow api worker otel-collector

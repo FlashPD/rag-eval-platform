@@ -98,6 +98,7 @@ class RetrievalEvaluationRunner:
             raise ValueError("evaluation dataset contains no queries")
 
         expected_hashes = await self._get_variant_hashes(run.id)
+        expected_index_fingerprints = dict(run.index_fingerprints)
         current_hashes = {
             variant_name: self._variants.get(variant_name).configuration_hash
             for variant_name in run.spec.variants
@@ -138,6 +139,7 @@ class RetrievalEvaluationRunner:
                         dataset_name=run.spec.dataset,
                         variant_name=variant_name,
                         expected_hashes=expected_hashes,
+                        expected_index_fingerprints=expected_index_fingerprints,
                     )
             run = await self._get_run(run.id)
             if run.state is EvalRunState.CANCELLED:
@@ -147,6 +149,10 @@ class RetrievalEvaluationRunner:
                     "evaluation result count does not match expected work: "
                     f"completed={run.progress.completed_queries}, expected={total_work}"
                 )
+            missing_index_fingerprints = set(run.spec.variants) - run.index_fingerprints.keys()
+            if missing_index_fingerprints:
+                missing = ", ".join(sorted(missing_index_fingerprints))
+                raise ValueError(f"evaluation did not record index fingerprints for: {missing}")
             run = await self._set_state(run.id, EvalRunState.SCORING)
 
         if run.state is EvalRunState.SCORING:
@@ -160,6 +166,7 @@ class RetrievalEvaluationRunner:
         dataset_name: str,
         variant_name: str,
         expected_hashes: dict[str, str],
+        expected_index_fingerprints: dict[str, str],
     ) -> None:
         response = await self._search.search(
             SearchRequest(
@@ -171,6 +178,19 @@ class RetrievalEvaluationRunner:
         )
         if response.variant_hash != expected_hashes[variant_name]:
             raise ValueError(f"retrieval response has an unexpected hash for {variant_name}")
+        expected_fingerprint = expected_index_fingerprints.get(variant_name)
+        if expected_fingerprint is None:
+            await self._pin_index_fingerprint(
+                run_id,
+                variant=variant_name,
+                fingerprint=response.index_fingerprint,
+            )
+            expected_index_fingerprints[variant_name] = response.index_fingerprint
+        elif response.index_fingerprint != expected_fingerprint:
+            raise ValueError(
+                f"retrieval response used a different index for {variant_name}: "
+                f"expected={expected_fingerprint}, observed={response.index_fingerprint}"
+            )
         ranked_document_ids = tuple(hit.document_id for hit in response.hits)
         scores = compute_retrieval_metrics(ranked_document_ids, query.qrels)
         result = QueryResult(
@@ -194,6 +214,14 @@ class RetrievalEvaluationRunner:
     async def _get_variant_hashes(self, run_id: UUID) -> dict[str, str]:
         async with self._sessions() as session:
             return await SqlAlchemyEvaluationRunRepository(session).get_variant_hashes(run_id)
+
+    async def _pin_index_fingerprint(self, run_id: UUID, *, variant: str, fingerprint: str) -> None:
+        async with self._sessions.begin() as session:
+            await SqlAlchemyEvaluationRunRepository(session).pin_index_fingerprint(
+                run_id,
+                variant=variant,
+                fingerprint=fingerprint,
+            )
 
     async def _load_queries(
         self, *, dataset_name: str, dataset_version: str, split: str

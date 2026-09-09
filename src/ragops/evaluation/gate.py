@@ -37,6 +37,7 @@ def build_baseline(
         git_commit=report.run.git_commit,
         recorded_at=datetime.now(UTC),
         variant_hashes=dict(variant_hashes),
+        index_fingerprints=report.run.index_fingerprints,
         metrics=metrics,
     )
 
@@ -101,6 +102,21 @@ def _ensure_comparable(baseline: BaselineDocument, run_spec: EvalRunSpec) -> Non
         )
 
 
+def _ensure_index_fingerprints_match(baseline: BaselineDocument, report: EvaluationReport) -> None:
+    observed = report.run.index_fingerprints
+    mismatches = {
+        variant: (fingerprint, observed.get(variant))
+        for variant, fingerprint in baseline.index_fingerprints.items()
+        if observed.get(variant) != fingerprint
+    }
+    if mismatches:
+        raise ValueError(
+            "baseline index fingerprints do not match the run: "
+            f"mismatches={mismatches}; "
+            "re-ingestion or index configuration changes require a new reviewed baseline"
+        )
+
+
 def evaluate_gate(
     report: EvaluationReport,
     baseline: BaselineDocument,
@@ -116,6 +132,7 @@ def evaluate_gate(
     """
     run_spec = report.run.spec
     _ensure_comparable(baseline, run_spec)
+    _ensure_index_fingerprints_match(baseline, report)
 
     observed = {(summary.variant, summary.metric): summary.mean for summary in report.metrics}
     results: list[GateMetricResult] = []

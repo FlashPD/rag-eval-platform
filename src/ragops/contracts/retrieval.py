@@ -89,3 +89,4 @@ class SearchResponse(Contract):
     timings: tuple[StageTiming, ...]
     trace_id: str = Field(min_length=1)
     variant_hash: str = Field(min_length=64, max_length=64)
+    index_fingerprint: str = Field(min_length=64, max_length=64)
