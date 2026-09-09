@@ -1,0 +1,48 @@
+{
+  "dataset": "fiqa",
+  "git_commit": "1cf6fdb49c34ca736d714de0143424555b1b61e0",
+  "index_fingerprints": {
+    "bm25": "fc2bd6e33131fb8f56caaa441ab8b7b5f42c4fe370fa9ef6fcc46853c914c1b4",
+    "dense_bge_small": "fc2bd6e33131fb8f56caaa441ab8b7b5f42c4fe370fa9ef6fcc46853c914c1b4",
+    "hybrid_rrf": "fc2bd6e33131fb8f56caaa441ab8b7b5f42c4fe370fa9ef6fcc46853c914c1b4",
+    "hybrid_rrf_rerank": "fc2bd6e33131fb8f56caaa441ab8b7b5f42c4fe370fa9ef6fcc46853c914c1b4"
+  },
+  "metrics": {
+    "bm25": {
+      "mrr_at_10": 0.41923809523809524,
+      "ndcg_at_10": 0.3333249181850541,
+      "recall_at_10": 0.4104761904761905,
+      "recall_at_100": 0.574047619047619
+    },
+    "dense_bge_small": {
+      "mrr_at_10": 0.5282222222222223,
+      "ndcg_at_10": 0.45980157552157364,
+      "recall_at_10": 0.540952380952381,
+      "recall_at_100": 0.7292857142857143
+    },
+    "hybrid_rrf": {
+      "mrr_at_10": 0.49268253968253967,
+      "ndcg_at_10": 0.4235947002352339,
+      "recall_at_10": 0.5480952380952381,
+      "recall_at_100": 0.7276190476190476
+    },
+    "hybrid_rrf_rerank": {
+      "mrr_at_10": 0.5626031746031745,
+      "ndcg_at_10": 0.4817898433987224,
+      "recall_at_10": 0.5914285714285714,
+      "recall_at_100": 0.7276190476190476
+    }
+  },
+  "recorded_at": "2026-09-09T01:48:26.501724Z",
+  "run_id": "78602617-590a-4ba8-b8a6-bd5536fc4f4c",
+  "sample_size": 50,
+  "seed": 42,
+  "split": "test",
+  "variant_hashes": {
+    "bm25": "d68440286741fdd5d56009c985b644665dab4b3fda6518a0d79237d5c98a8c23",
+    "dense_bge_small": "b4a88567fec6c5b6caf11eadec851a885a20ac41a3c22eac3a5790b53b43722e",
+    "hybrid_rrf": "e954dc6dd5448cbaa08ebc0e828918015f38b67d4fa68764417aa1ae057291a3",
+    "hybrid_rrf_rerank": "947c52274bbc63a4e97cee86c00b8913c9fed64a983540dcf3391ee1f71dbc68"
+  },
+  "version": 2
+}

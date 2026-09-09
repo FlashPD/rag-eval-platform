@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from ragops.contracts import SourceDocument
 from ragops.ingestion.hashing import hash_dataset
 from ragops.ingestion.loader import load_beir_dataset
 from ragops.ingestion.sources import (
@@ -26,6 +27,13 @@ def test_loads_beir_fixture_and_filters_queries_to_split() -> None:
     assert [query.external_id for query in dataset.queries] == ["q-1", "q-2"]
     assert len(dataset.qrels) == 2
     assert len(hash_dataset(dataset)) == 64
+
+
+def test_source_document_preserves_an_empty_beir_corpus_row() -> None:
+    document = SourceDocument(external_id="117276", title="", text="")
+
+    assert document.title == ""
+    assert document.text == ""
 
 
 def test_checksum_verification_rejects_modified_file(tmp_path: Path) -> None:

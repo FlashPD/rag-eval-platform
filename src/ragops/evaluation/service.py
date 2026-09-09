@@ -169,12 +169,13 @@ async def gate_evaluation_run(
     sessions: async_sessionmaker[AsyncSession],
     run_id: UUID,
     *,
-    baseline_path: Path,
+    baseline_path: Path | None = None,
     thresholds: ThresholdCatalog,
 ) -> GateResult:
     """Compare a completed run against the committed baseline for its dataset."""
     report, variant_hashes = await _load_report_and_hashes(sessions, run_id)
-    baseline = read_baseline(baseline_path)
+    selected_baseline = baseline_path or Path("evals/baselines") / f"{report.run.spec.dataset}.json"
+    baseline = read_baseline(selected_baseline)
     mismatches = {
         variant: (configuration_hash, variant_hashes.get(variant))
         for variant, configuration_hash in baseline.variant_hashes.items()

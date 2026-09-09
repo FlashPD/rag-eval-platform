@@ -17,6 +17,8 @@ def test_loads_checked_in_configuration() -> None:
     assert hybrid.fusion == FusionStageConfig(method="rrf", k=60)
     assert len(hybrid.configuration_hash) == 64
     assert bundle.datasets.get("fixture").source == "local"
+    assert bundle.datasets.get("nfcorpus").checksum == "a89dba18a62ef92f7d323ec890a0d38d"
+    assert bundle.datasets.get("fiqa").checksum == "17918ed23cd04fb15047f73e6c3bd9d9"
     assert bundle.models.embeddings["default"].dimension == 384
     assert bundle.thresholds.metrics["ndcg_at_10"].maximum_absolute_drop == 0.01
 

@@ -188,7 +188,17 @@ class IngestionService:
         batch_size: int,
     ) -> int:
         inserted = 0
-        for batch in _batches(documents, batch_size):
+        # Transformer inference pads every batch to its longest input. Stable
+        # length bucketing avoids making thousands of short FiQA passages pay
+        # the cost of an unrelated long passage while preserving resumability.
+        embedding_order = sorted(
+            documents,
+            key=lambda document: (
+                -(len(document.title) + len(document.text)),
+                document.external_id,
+            ),
+        )
+        for batch in _batches(embedding_order, batch_size):
             document_batch = list(batch)
             document_ids = [document.id for document in document_batch]
             async with self._sessions() as session:
@@ -211,6 +221,10 @@ class IngestionService:
                 for document, vector in zip(missing, vectors, strict=True)
             ]
             async with self._sessions.begin() as session:
-                inserted += await SqlAlchemyEmbeddingRepository(session).add_missing(records)
-                await SqlAlchemyIndexVersionRepository(session).refresh_progress(index_version.id)
+                inserted_batch = await SqlAlchemyEmbeddingRepository(session).add_missing(records)
+                inserted += inserted_batch
+                await SqlAlchemyIndexVersionRepository(session).advance_progress(
+                    index_version.id,
+                    inserted_count=inserted_batch,
+                )
         return inserted

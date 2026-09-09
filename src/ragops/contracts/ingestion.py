@@ -12,7 +12,11 @@ from ragops.contracts.resources import IndexVersion
 class SourceDocument(Contract):
     external_id: str = Field(min_length=1, max_length=255)
     title: str = ""
-    text: str = Field(min_length=1)
+    # BEIR FiQA contains 38 corpus rows whose title and text are both empty,
+    # including one document referenced by the test qrels. Keep those rows so
+    # corpus identifiers and benchmark relevance judgments remain faithful to
+    # the pinned upstream archive.
+    text: str = ""
 
 
 class SourceQuery(Contract):

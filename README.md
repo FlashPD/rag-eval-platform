@@ -9,6 +9,25 @@ The product is the measurement, not the search.
 
 ## Results
 
+All test queries in three BEIR domains, using `BAAI/bge-small-en-v1.5` embeddings and
+`cross-encoder/ms-marco-MiniLM-L-6-v2` reranking on CPU. Values are nDCG@10; each linked report
+contains nDCG@10, Recall@10, Recall@100, MRR@10, 95% intervals, stage latency, and all 24 paired
+variant comparisons.
+
+| Dataset | Queries / documents | BM25 | Dense | Hybrid | Hybrid + rerank | Full report |
+|---|---:|---:|---:|---:|---:|---|
+| SciFact | 300 / 5,183 | 0.6617 | **0.7200** | 0.7085 | 0.6934 | [`447d6235`](evals/runs/447d6235-3773-44a3-bc4d-bbf96df2c159/report.md) |
+| NFCorpus | 323 / 3,633 | 0.3064 | 0.3375 | 0.3444 | **0.3591** | [`2d9f6192`](evals/runs/2d9f6192-1704-4b4a-908d-3508b1fa04bd/report.md) |
+| FiQA-2018 | 648 / 57,638 | 0.2326 | **0.3848** | 0.3436 | 0.3731 | [`a0611a31`](evals/runs/a0611a31-bd3a-4bb5-976c-c3a885230c93/report.md) |
+
+The point-estimate winner changes with the domain: dense wins SciFact and FiQA, while reranked
+hybrid wins NFCorpus. The paired results sharpen that observation. On NFCorpus, reranked hybrid
+beats dense by 0.0216 nDCG@10 with a 95% interval of [0.0044, 0.0392]. On SciFact and FiQA, the
+dense-versus-reranked intervals include zero, so their apparent dense advantage is not significant.
+Plain hybrid never wins nDCG@10, although it ties reranked hybrid on Recall@100 by construction.
+
+### SciFact detail
+
 BEIR SciFact, **all 300 test queries**, `BAAI/bge-small-en-v1.5` embeddings and
 `cross-encoder/ms-marco-MiniLM-L-6-v2` reranking on CPU. Run
 `447d6235-3773-44a3-bc4d-bbf96df2c159` at commit `3e2cc66`; the full report, including every
@@ -102,17 +121,18 @@ exactly; it just should not be quoted as a headline result.
   `vector(384)` embeddings, a cosine HNSW index, repositories, and UTC-normalized timestamps.
 - A durable PostgreSQL job queue with idempotent submission, `FOR UPDATE SKIP LOCKED` claims,
   leases, heartbeats, retries, cancellation, and stale-worker protection.
-- A resumable BEIR ingestion pipeline for the checked-in fixture and the checksum-pinned SciFact
-  dataset. It securely downloads and validates archives, loads documents, queries, and qrels in
-  committed batches, creates content-addressed BM25 artifacts, and persists sentence-transformer
-  embeddings with recoverable index-build progress.
+- A resumable BEIR ingestion pipeline for the checked-in fixture and checksum-pinned SciFact,
+  NFCorpus, and FiQA archives. It securely downloads and validates archives, loads documents,
+  queries, and qrels in committed batches, creates content-addressed BM25 artifacts, and persists
+  length-bucketed sentence-transformer embeddings with recoverable index-build progress.
 - Sparse BM25, dense pgvector, reciprocal-rank-fusion hybrid, and cross-encoder reranked retrieval
   pipelines. Search results preserve stage scores, deterministic ranks, stage latencies,
   configuration hashes, and trace identifiers. Reranking reorders its candidate window instead of
   truncating the result list, so every variant retrieves to the same depth and deep metrics stay
   comparable.
 - A `POST /v1/search` endpoint with validated request and response schemas, API error mapping, lazy
-  model loading, OpenTelemetry spans, and health and readiness endpoints.
+  model loading, OpenTelemetry spans, Prometheus request and retrieval-stage metrics, a `/metrics`
+  endpoint, and health and readiness endpoints.
 - Asynchronous evaluation submission: `POST /v1/evals` writes the run and its queue job in one
   transaction and returns immediately, `GET /v1/evals/{run_id}` reports progress, and a `ragops
   worker` process claims jobs, renews its lease while a run executes, retries failures, and shuts
@@ -126,15 +146,36 @@ exactly; it just should not be quoted as a headline result.
 - A regression gate that compares a completed run against a committed per-dataset baseline, refuses
   comparisons across different benchmarks, prints a per-metric diff, and distinguishes a quality
   regression from an unusable comparison by exit code.
-- Provenance on every run: git commit, container image digest, dataset, split, sample size, seed,
-  and the configuration hash of each variant.
+- Portable index provenance on every run and baseline. Each variant records a content-derived
+  fingerprint covering the corpus, embedding and HNSW configuration, and BM25 artifact. The gate
+  rejects a changed index or variant configuration before comparing quality metrics, without
+  depending on database-local UUIDs, and Markdown and JSON reports expose the fingerprints used.
+- A CPU-first, non-root Docker image that builds natively on Apple Silicon and `amd64`, plus a
+  Compose stack for pgvector, automatic Alembic migrations, the API, evaluation worker,
+  OpenTelemetry Collector, Tempo, Prometheus, and Grafana. Langfuse v4 and its backing services are
+  available through an optional higher-memory profile.
+- Repository-provisioned Prometheus, Tempo, and Grafana configuration, including a service-health
+  dashboard for request rate, HTTP P95 latency, and retrieval-stage P95 latency. Traces flow from
+  the API through the OpenTelemetry Collector into Tempo.
+- A pull-request regression job that starts pgvector, migrates the database, ingests the checked-in
+  fixture, runs a deterministic retrieval evaluation, and gates it against a committed fixture
+  baseline. The fixture baseline and all three 50-query real-dataset baselines include index
+  fingerprints.
 
-SciFact is fully ingested against live PostgreSQL at 5,183 documents, 300 queries, and 339 qrels,
-with all 5,183 embeddings persisted and the index version marked ready. All four retrieval variants
-have been evaluated across the complete test set with real model weights, and evaluations have been
-submitted over HTTP and executed by a worker end to end. The checked-in `fixtures/tiny-beir` corpus
-backs the integration tests and needs no download. The suite passes 98 tests along with Ruff, strict
-mypy, dependency, migration-head, and OpenAPI checks.
+All three real corpora are fully ingested in live PostgreSQL with ready indexes: SciFact has 5,183
+documents and 300 test queries, NFCorpus has 3,633 and 323, and FiQA has 57,638 and 648. Every
+variant has a complete report and every dataset has a seed-42, 50-query baseline. At the largest
+scale, FiQA's BM25 artifact is 76 MB and its embedding rows occupy approximately 89 MB before table
+and index overhead. A controlled interruption preserved 18,392 completed embeddings; the resumed
+invocation inserted only the remaining 39,246, and a final rerun inserted zero. FiQA's full-run P95
+dense retrieval was 67 ms; reranking dominated at 3.11 s P95, well above the phase-1 600 ms target.
+
+The checked-in `fixtures/tiny-beir` corpus backs the integration tests and needs no download. The
+suite passes 101 tests along with Ruff and strict mypy. The complete core Compose stack has also
+been validated on Apple Silicon: the API and PostgreSQL report healthy, the migration exits
+successfully, the worker polls for jobs, Prometheus scrapes application metrics, Tempo accepts
+traces, and the provisioned Grafana dashboard displays live metrics. A retrieval run executed
+inside the Compose stack also passed the gate against the packaged, read-only fixture baseline.
 
 ## Getting started
 
@@ -173,11 +214,14 @@ make db-upgrade
 ```bash
 .venv/bin/ragops ingest --dataset fixture
 .venv/bin/ragops ingest --dataset scifact
+.venv/bin/ragops ingest --dataset nfcorpus
+.venv/bin/ragops ingest --dataset fiqa
 ```
 
 The first real ingestion downloads the configured sentence-transformer weights into the artifact
 directory. Re-running an unchanged ingestion reuses persisted documents, qrels, BM25 artifacts, and
-embeddings, and an interrupted one resumes from its last committed batch.
+embeddings, and an interrupted one resumes from its last committed batch. Dataset terms, snapshot
+counts, and the FiQA empty-record edge case are documented in [`docs/data_card.md`](docs/data_card.md).
 
 ### Docker Compose on macOS
 
@@ -269,11 +313,12 @@ and outlive the database they were computed from. Pass `--output-dir` to archive
 
 ### Baselines and the regression gate
 
-Record a completed run as the committed reference for its dataset, then gate later runs against it:
+Record a completed run as the committed reference for its dataset, then gate later runs against it.
+When no path is supplied, both commands select `evals/baselines/<dataset>.json` from the run:
 
 ```bash
-.venv/bin/ragops eval baseline <run_id> --output evals/baselines/main.json
-.venv/bin/ragops eval gate <run_id> --baseline evals/baselines/main.json
+.venv/bin/ragops eval baseline <run_id>
+.venv/bin/ragops eval gate <run_id>
 ```
 
 `eval gate` prints a per-metric diff and exits non-zero when any metric falls further below the
@@ -304,7 +349,10 @@ configuration hash before comparing scores.
 The pull-request workflow exercises this path end to end against the checked-in two-query fixture:
 it starts pgvector, applies migrations, ingests and indexes the fixture, runs BM25, and gates the
 result against `evals/baselines/fixture.json`. This is a fast correctness canary; the 50-query
-SciFact baseline remains the quality regression benchmark used for retrieval changes.
+baselines at `evals/baselines/scifact.json`, `nfcorpus.json`, and `fiqa.json` are deterministic
+cross-domain quality canaries for retrieval changes. Reproduce any one with all four variants,
+`--sample-size 50`, and `--seed 42`; the baseline itself pins the sample definition, variant hashes,
+and index fingerprint.
 
 ### Queued runs and workers
 
@@ -339,13 +387,12 @@ flight finishes.
 
 The CPU-first Docker image, core Compose stack, optional full Langfuse profile, provisioned service
 dashboard, OpenTelemetry trace export, Prometheus metrics, pull-request smoke gate, and portable
-index provenance are implemented. The Compose stack still needs a runtime validation on a machine
-with Docker Desktop; static and application tests do not pull or start its service images.
+index provenance are implemented and have been exercised together on Docker Desktop for macOS.
 
-Generation and LLM-as-judge scoring, the online evaluation sampler, the NFCorpus and FiQA corpora,
-and the Terraform path to ECS are still ahead. The PR workflow uses the tiny fixture for fast
-end-to-end coverage; promoting the 50-query SciFact gate into hosted CI will require a durable cache
-for its corpus indexes and embeddings so every pull request does not rebuild them.
+Generation and LLM-as-judge scoring, the online evaluation sampler, and the Terraform path to ECS
+are still ahead. The PR workflow uses the tiny fixture for fast end-to-end coverage; promoting the
+three 50-query real-dataset gates into hosted CI will require a durable cache
+for the three real-corpus indexes and embeddings so every pull request does not rebuild them.
 
 ## Design
 

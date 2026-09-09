@@ -4,7 +4,7 @@ from uuid import uuid4
 import pytest
 from pydantic import ValidationError
 
-from ragops.contracts import DocumentEmbedding, IndexVersionSpec
+from ragops.contracts import DocumentEmbedding, IndexBuildState, IndexVersionSpec
 from ragops.persistence import Base, create_engine, create_session_factory
 from ragops.persistence.embeddings import (
     SqlAlchemyEmbeddingRepository,
@@ -76,8 +76,18 @@ def test_embedding_batches_are_resumable() -> None:
             )
             repository = SqlAlchemyEmbeddingRepository(session)
 
-            assert await repository.add_missing([embedding]) == 1
-            assert await repository.add_missing([embedding]) == 0
+            inserted = await repository.add_missing([embedding])
+            assert inserted == 1
+            progress = await indexes.advance_progress(index.id, inserted_count=inserted)
+            assert progress.embedded_document_count == 1
+            assert progress.state is IndexBuildState.READY
+            assert progress.completed_at is not None
+
+            inserted = await repository.add_missing([embedding])
+            assert inserted == 0
+            progress = await indexes.advance_progress(index.id, inserted_count=inserted)
+            assert progress.embedded_document_count == 1
+            assert progress.state is IndexBuildState.READY
             assert await repository.count(index.id) == 1
             assert await repository.get_for_documents(index.id, [document.id]) == {
                 document.id: embedding.values

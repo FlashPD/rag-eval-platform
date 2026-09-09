@@ -31,7 +31,7 @@ from ragops.provenance import resolve_git_commit, resolve_image_digest
 from ragops.retrieval.factory import build_retrieval_pipeline
 from ragops.worker import JobWorker, build_evaluation_job_handler
 
-DEFAULT_BASELINE_PATH = Path("evals/baselines/main.json")
+DEFAULT_BASELINE_DIRECTORY = Path("evals/baselines")
 DEFAULT_REPORT_DIRECTORY = Path("evals/runs")
 GATE_BREACHED_EXIT_CODE = 1
 GATE_NOT_COMPARABLE_EXIT_CODE = 2
@@ -82,13 +82,21 @@ def build_parser() -> argparse.ArgumentParser:
         "gate", help="compare a completed run against a committed baseline"
     )
     evaluation_gate.add_argument("run_id", type=UUID)
-    evaluation_gate.add_argument("--baseline", type=Path, default=DEFAULT_BASELINE_PATH)
+    evaluation_gate.add_argument(
+        "--baseline",
+        type=Path,
+        help="baseline file (default: evals/baselines/<dataset>.json)",
+    )
     evaluation_gate.add_argument("--format", choices=("markdown", "json"), default="markdown")
     evaluation_baseline = evaluation_commands.add_parser(
         "baseline", help="write a completed run's metrics as a committable baseline"
     )
     evaluation_baseline.add_argument("run_id", type=UUID)
-    evaluation_baseline.add_argument("--output", type=Path, default=DEFAULT_BASELINE_PATH)
+    evaluation_baseline.add_argument(
+        "--output",
+        type=Path,
+        help="output file (default: evals/baselines/<dataset>.json)",
+    )
 
     worker = commands.add_parser("worker", help="execute queued evaluation jobs")
     worker.add_argument("--worker-id")
@@ -221,8 +229,9 @@ async def _write_baseline(arguments: argparse.Namespace) -> int:
     engine = create_engine(settings.database_url)
     try:
         baseline = await build_run_baseline(create_session_factory(engine), arguments.run_id)
-        write_baseline(baseline, arguments.output)
-        print(f"wrote baseline for run {baseline.run_id} to {arguments.output}")
+        output = arguments.output or DEFAULT_BASELINE_DIRECTORY / f"{baseline.dataset}.json"
+        write_baseline(baseline, output)
+        print(f"wrote baseline for run {baseline.run_id} to {output}")
         return 0
     finally:
         await engine.dispose()

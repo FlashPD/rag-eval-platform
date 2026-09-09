@@ -31,6 +31,10 @@ class IndexVersionRepository(Protocol):
 
     async def refresh_progress(self, index_version_id: UUID) -> IndexVersion: ...
 
+    async def advance_progress(
+        self, index_version_id: UUID, *, inserted_count: int
+    ) -> IndexVersion: ...
+
 
 class EmbeddingRepository(Protocol):
     async def add_missing(self, embeddings: Sequence[DocumentEmbedding]) -> int: ...
@@ -110,6 +114,26 @@ class SqlAlchemyIndexVersionRepository:
             raise ValueError("embedded document count exceeds the index corpus size")
         if row.state == IndexBuildState.READY.value and embedded_count < row.total_document_count:
             raise ValueError("a ready index is missing persisted embeddings")
+        row.embedded_document_count = embedded_count
+        if embedded_count == row.total_document_count and row.state != IndexBuildState.READY.value:
+            row.state = IndexBuildState.READY.value
+            row.completed_at = datetime.now(UTC)
+        await self._session.flush()
+        await self._session.refresh(row)
+        return index_version_contract(row)
+
+    async def advance_progress(
+        self, index_version_id: UUID, *, inserted_count: int
+    ) -> IndexVersion:
+        """Advance one committed batch without recounting the growing embedding table."""
+        if inserted_count < 0:
+            raise ValueError("inserted embedding count cannot be negative")
+        row = await self._session.get(IndexVersionRow, index_version_id, with_for_update=True)
+        if row is None:
+            raise KeyError(f"index version not found: {index_version_id}")
+        embedded_count = row.embedded_document_count + inserted_count
+        if embedded_count > row.total_document_count:
+            raise ValueError("embedded document count exceeds the index corpus size")
         row.embedded_document_count = embedded_count
         if embedded_count == row.total_document_count and row.state != IndexBuildState.READY.value:
             row.state = IndexBuildState.READY.value
