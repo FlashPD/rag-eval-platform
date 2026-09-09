@@ -224,6 +224,37 @@ def test_gate_ignores_the_seed_when_every_query_is_evaluated() -> None:
     assert result.passed
 
 
+def test_gate_rejects_a_different_judge_prompt_version() -> None:
+    report = report_for({"ndcg_at_10": 0.60, "faithfulness": 0.9})
+    generation_spec = EvalRunSpec(
+        dataset="scifact",
+        variants=("bm25",),
+        sample_size=50,
+        generation_enabled=True,
+        generation_sample_size=50,
+        generator_profile="default",
+        judge_profiles=("default",),
+        generation_prompt_version="scifact-v1",
+        judge_prompt_version="judge-v1",
+    )
+    report = report.model_copy(
+        update={"run": report.run.model_copy(update={"spec": generation_spec})}
+    )
+    baseline = build_baseline(report, variant_hashes={"bm25": "h" * 64})
+    changed = report.model_copy(
+        update={
+            "run": report.run.model_copy(
+                update={
+                    "spec": generation_spec.model_copy(update={"judge_prompt_version": "judge-v2"})
+                }
+            )
+        }
+    )
+
+    with pytest.raises(ValueError, match="judge prompt version does not match"):
+        evaluate_gate(changed, baseline, THRESHOLDS)
+
+
 def test_baseline_records_the_sample_it_was_measured_on() -> None:
     report = report_for({"ndcg_at_10": 0.60}, sample_size=50, seed=42)
 

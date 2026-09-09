@@ -18,6 +18,7 @@ from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from ragops.config import Settings
+from ragops.contracts import AnswerResponse, JudgeVerdict
 
 _CONFIGURE_LOCK = Lock()
 _CONFIGURED = False
@@ -37,6 +38,21 @@ _retrieval_stage_duration = _meter.create_histogram(
     "ragops.retrieval.stage.duration",
     description="Retrieval pipeline stage duration",
     unit="ms",
+)
+_generation_duration = _meter.create_histogram(
+    "ragops.generation.duration", description="Answer generation duration", unit="s"
+)
+_generation_outcomes = _meter.create_counter(
+    "ragops.generation.outcomes", description="Generation outcomes", unit="{answer}"
+)
+_llm_tokens = _meter.create_counter(
+    "ragops.llm.tokens", description="Provider token use", unit="{token}"
+)
+_llm_cost = _meter.create_counter(
+    "ragops.llm.cost", description="Incremental provider cost", unit="USD"
+)
+_judge_scores = _meter.create_histogram(
+    "ragops.judge.score", description="Offline and online judge scores", unit="1"
 )
 
 
@@ -107,3 +123,35 @@ def record_retrieval_stage(*, stage: str, duration_ms: float, dataset: str, vari
         duration_ms,
         {"stage": stage, "dataset": dataset, "variant": variant},
     )
+
+
+def record_generation_answer(answer: AnswerResponse, *, duration_seconds: float) -> None:
+    attributes: dict[str, str | int] = {
+        "provider": answer.provider,
+        "model": answer.model,
+        "outcome": answer.outcome.value,
+        "cache_hit": int(answer.cache_hit),
+    }
+    _generation_duration.record(duration_seconds, attributes)
+    _generation_outcomes.add(1, attributes)
+    for token_type, count in (
+        ("input", answer.usage.input_tokens),
+        ("cached_input", answer.usage.cached_input_tokens),
+        ("cache_write_input", answer.usage.cache_write_input_tokens),
+        ("output", answer.usage.output_tokens),
+    ):
+        _llm_tokens.add(count, {**attributes, "role": "generator", "token_type": token_type})
+    _llm_cost.add(float(answer.usage.cost_usd), {**attributes, "role": "generator"})
+
+
+def record_judge_verdict(*, profile: str, verdict: JudgeVerdict, source: str) -> None:
+    attributes: dict[str, str | int] = {
+        "provider": verdict.provider,
+        "model": verdict.judge_model,
+        "profile": profile,
+        "source": source,
+        "cache_hit": int(verdict.cache_hit),
+    }
+    _judge_scores.record(verdict.faithfulness, {**attributes, "metric": "faithfulness"})
+    _judge_scores.record(verdict.relevance, {**attributes, "metric": "relevance"})
+    _llm_cost.add(float(verdict.usage.cost_usd), {**attributes, "role": "judge"})

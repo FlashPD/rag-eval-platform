@@ -6,12 +6,19 @@ import httpx
 
 from ragops.api import app, create_app
 from ragops.contracts import (
+    AnswerRequest,
+    AnswerResponse,
+    CitationValidation,
+    Confidence,
     EvalProgress,
     EvalRun,
     EvalRunSpec,
     EvalRunState,
+    GenerationOutcome,
+    Passage,
     SearchRequest,
     SearchResponse,
+    TokenUsage,
 )
 from ragops.retrieval.errors import DatasetNotIngestedError
 
@@ -30,6 +37,39 @@ class FakeSearchService:
 class MissingDatasetSearchService:
     async def search(self, request: SearchRequest) -> SearchResponse:
         raise DatasetNotIngestedError("dataset is not ingested: missing")
+
+
+class FakeAnswerService:
+    def __init__(self) -> None:
+        self.requests: list[AnswerRequest] = []
+
+    async def answer(self, request: AnswerRequest) -> AnswerResponse:
+        self.requests.append(request)
+        return AnswerResponse(
+            answer="Mars is the red planet [1].",
+            citations=("[1]",),
+            abstained=False,
+            confidence=Confidence.HIGH,
+            contexts=(
+                Passage(
+                    local_id="[1]",
+                    document_id="mars",
+                    title="Mars",
+                    text="Mars is known as the red planet.",
+                    retrieval_rank=1,
+                    retrieval_score=1,
+                ),
+            ),
+            usage=TokenUsage(input_tokens=10, output_tokens=5),
+            outcome=GenerationOutcome.OK,
+            trace_id="answer-trace",
+            provider="openai",
+            model="test-model",
+            generator_configuration_hash="d" * 64,
+            prompt_version="answer-v1",
+            rendered_prompt_hash="e" * 64,
+            citation_validation=CitationValidation(valid=True),
+        )
 
 
 async def get(path: str) -> httpx.Response:
@@ -100,6 +140,46 @@ def test_search_endpoint_maps_missing_dataset_to_not_found() -> None:
 
     assert response.status_code == 404
     assert response.json() == {"detail": "dataset is not ingested: missing"}
+
+
+def test_answer_endpoint_returns_a_provenance_complete_response() -> None:
+    service = FakeAnswerService()
+    application = create_app(FakeSearchService(), answer_service=service)
+
+    response = asyncio.run(
+        call(
+            application,
+            "POST",
+            "/v1/answer",
+            json={
+                "query": "What is the red planet?",
+                "dataset": "fixture",
+                "variant": "bm25",
+                "generator_profile": "default",
+            },
+        )
+    )
+
+    assert response.status_code == 200
+    assert response.json()["provider"] == "openai"
+    assert response.json()["citations"] == ["[1]"]
+    assert service.requests[0].dataset == "fixture"
+
+
+def test_answer_endpoint_is_explicitly_unavailable_without_a_provider() -> None:
+    application = create_app(FakeSearchService())
+
+    response = asyncio.run(
+        call(
+            application,
+            "POST",
+            "/v1/answer",
+            json={"query": "Question", "dataset": "fixture", "variant": "bm25"},
+        )
+    )
+
+    assert response.status_code == 503
+    assert "RAGOPS_OPENAI_API_KEY" in response.json()["detail"]
 
 
 class FakeEvaluationService:

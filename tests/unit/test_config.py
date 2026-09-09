@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from ragops.config import Settings, load_config_bundle
+from ragops.config import LLMProfile, Settings, load_config_bundle
 from ragops.contracts import DenseStageConfig, FusionStageConfig, VariantConfig
 
 CONFIG_DIRECTORY = Path(__file__).parents[2] / "config"
@@ -33,6 +33,21 @@ def test_variant_hash_is_deterministic() -> None:
     assert first.configuration_hash == second.configuration_hash
 
 
+def test_llm_profile_hash_covers_provider_model_and_parameters() -> None:
+    first = LLMProfile(
+        provider="openai",
+        model="example/model",
+        effort="medium",
+        temperature=0,
+        max_tokens=1_024,
+    )
+    same = LLMProfile.model_validate(first.model_dump())
+    changed = first.model_copy(update={"max_tokens": 2_048})
+
+    assert first.configuration_hash == same.configuration_hash
+    assert first.configuration_hash != changed.configuration_hash
+
+
 def test_fusion_requires_both_retrieval_stages() -> None:
     with pytest.raises(ValidationError, match="fusion requires both"):
         VariantConfig(
@@ -46,13 +61,13 @@ def test_pricing_uses_decimal_arithmetic() -> None:
     pricing = load_config_bundle(CONFIG_DIRECTORY).pricing
 
     cost = pricing.calculate_cost(
-        provider="anthropic",
-        model="claude-opus-5",
+        provider="openai",
+        model="gpt-5.4-mini-2026-03-17",
         input_tokens=2_500,
         output_tokens=300,
     )
 
-    assert cost == Decimal("0.02000")
+    assert cost == Decimal("0.003225")
 
 
 def test_settings_use_ragops_environment_prefix(monkeypatch: pytest.MonkeyPatch) -> None:

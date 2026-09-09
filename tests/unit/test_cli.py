@@ -91,12 +91,18 @@ def test_eval_run_command_builds_and_executes_spec(
         spec: EvalRunSpec,
         git_commit: str | None = None,
         image_digest: str | None = None,
+        answer_service: object | None = None,
+        judge_renderer: object | None = None,
+        judges: object | None = None,
     ) -> EvalRun:
         captured["sessions"] = sessions
         captured["search"] = search
         captured["spec"] = spec
         captured["git_commit"] = git_commit
         captured["image_digest"] = image_digest
+        captured["answer_service"] = answer_service
+        captured["judge_renderer"] = judge_renderer
+        captured["judges"] = judges
         return EvalRun(
             id=uuid4(),
             spec=spec,

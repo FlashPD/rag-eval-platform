@@ -12,17 +12,23 @@ from uuid import UUID
 
 from ragops import __version__
 from ragops.config import Settings, load_config_bundle
-from ragops.contracts import EVALUATION_JOB_KIND, EvalRunSpec
+from ragops.contracts import EVALUATION_JOB_KIND, ONLINE_JUDGE_JOB_KIND, EvalRunSpec
 from ragops.evaluation import (
     build_run_baseline,
     gate_evaluation_run,
     get_evaluation_report,
+    load_calibration_labels,
+    render_calibration_markdown,
     render_gate_report,
     render_markdown_report,
+    run_calibration,
     run_retrieval_evaluation,
     write_baseline,
     write_report_files,
 )
+from ragops.evaluation.judge_factory import build_judges
+from ragops.evaluation.online import build_online_judge_handler
+from ragops.generation.factory import build_answer_service, build_evaluation_answer_service
 from ragops.ingestion.artifacts import Bm25sIndexBuilder
 from ragops.ingestion.embedders import SentenceTransformerEmbedder
 from ragops.ingestion.service import IngestionService
@@ -69,6 +75,13 @@ def build_parser() -> argparse.ArgumentParser:
     evaluation_run.add_argument("--sample-size", type=int)
     evaluation_run.add_argument("--seed", type=int, default=42)
     evaluation_run.add_argument("--device")
+    evaluation_run.add_argument("--generation", action="store_true")
+    evaluation_run.add_argument("--generation-sample-size", type=int)
+    evaluation_run.add_argument("--generation-variants", type=_variant_names)
+    evaluation_run.add_argument("--generator-profile", default="default")
+    evaluation_run.add_argument("--judge-profiles", type=_variant_names)
+    evaluation_run.add_argument("--generation-prompt-version")
+    evaluation_run.add_argument("--judge-prompt-version", default="judge-v1")
     evaluation_report = evaluation_commands.add_parser(
         "report", help="render a completed evaluation run"
     )
@@ -96,6 +109,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--output",
         type=Path,
         help="output file (default: evals/baselines/<dataset>.json)",
+    )
+    evaluation_calibrate = evaluation_commands.add_parser(
+        "calibrate", help="compare configured judges with human-authored labels"
+    )
+    evaluation_calibrate.add_argument(
+        "--labels", type=Path, default=Path("evals/calibration/labels.jsonl")
+    )
+    evaluation_calibrate.add_argument("--judge-profiles", required=True, type=_variant_names)
+    evaluation_calibrate.add_argument("--judge-prompt-version", default="judge-v1")
+    evaluation_calibrate.add_argument(
+        "--output", type=Path, default=Path("evals/calibration/report.md")
     )
 
     worker = commands.add_parser("worker", help="execute queued evaluation jobs")
@@ -153,6 +177,22 @@ async def _run_evaluation(arguments: argparse.Namespace) -> int:
         variants=arguments.variants,
         sample_size=arguments.sample_size,
         seed=arguments.seed,
+        generation_enabled=arguments.generation,
+        generation_sample_size=(arguments.generation_sample_size if arguments.generation else None),
+        generation_variants=(arguments.generation_variants or ()) if arguments.generation else (),
+        generator_profile=(arguments.generator_profile if arguments.generation else None),
+        judge_profiles=(arguments.judge_profiles or ()) if arguments.generation else (),
+        generation_prompt_version=(
+            arguments.generation_prompt_version
+            or ("scifact-v1" if arguments.dataset == "scifact" else "answer-v1")
+            if arguments.generation
+            else None
+        ),
+        judge_prompt_version=(
+            arguments.judge_prompt_version
+            if arguments.generation and arguments.judge_profiles
+            else None
+        ),
     )
     engine = create_engine(settings.database_url)
     try:
@@ -164,6 +204,25 @@ async def _run_evaluation(arguments: argparse.Namespace) -> int:
             device=arguments.device or settings.model_device,
             model_cache_directory=settings.model_cache_directory,
         )
+        answer_service = None
+        judge_renderer = None
+        judges = None
+        if spec.generation_enabled:
+            answer_service = build_answer_service(
+                bundle,
+                sessions,
+                search=search,
+                settings=settings,
+                prompt_version=spec.generation_prompt_version or "answer-v1",
+                enable_online_sampling=False,
+            )
+            if spec.judge_profiles:
+                judge_renderer, judges = build_judges(
+                    bundle,
+                    sessions,
+                    settings=settings,
+                    prompt_version=spec.judge_prompt_version or "judge-v1",
+                )
         result = await run_retrieval_evaluation(
             sessions,
             search=search,
@@ -172,6 +231,9 @@ async def _run_evaluation(arguments: argparse.Namespace) -> int:
             spec=spec,
             git_commit=resolve_git_commit(),
             image_digest=resolve_image_digest(),
+            answer_service=answer_service,
+            judge_renderer=judge_renderer,
+            judges=judges,
         )
         print(result.model_dump_json(indent=2))
         return 0
@@ -237,6 +299,36 @@ async def _write_baseline(arguments: argparse.Namespace) -> int:
         await engine.dispose()
 
 
+async def _calibrate_judges(arguments: argparse.Namespace) -> int:
+    settings = Settings()
+    bundle = load_config_bundle(settings.configuration_directory)
+    engine = create_engine(settings.database_url)
+    try:
+        renderer, configured = build_judges(
+            bundle,
+            create_session_factory(engine),
+            settings=settings,
+            prompt_version=arguments.judge_prompt_version,
+        )
+        missing = set(arguments.judge_profiles) - set(configured)
+        if missing:
+            raise ValueError(f"unknown judge profiles: {', '.join(sorted(missing))}")
+        labels = load_calibration_labels(arguments.labels)
+        agreements = await run_calibration(
+            labels=labels,
+            renderer=renderer,
+            judges={name: configured[name] for name in arguments.judge_profiles},
+        )
+        report = render_calibration_markdown(agreements)
+        arguments.output.parent.mkdir(parents=True, exist_ok=True)
+        arguments.output.write_text(report, encoding="utf-8")
+        print(report, end="")
+        print(f"saved {arguments.output}")
+        return 0
+    finally:
+        await engine.dispose()
+
+
 async def _run_worker(arguments: argparse.Namespace) -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     settings = Settings()
@@ -251,16 +343,35 @@ async def _run_worker(arguments: argparse.Namespace) -> int:
             device=arguments.device or settings.model_device,
             model_cache_directory=settings.model_cache_directory,
         )
+        answer_service = None
+        judge_renderer = None
+        judges = None
+        handlers = {}
+        if settings.openai_api_key is not None:
+            answer_service = build_evaluation_answer_service(
+                bundle,
+                sessions,
+                search=search,
+                settings=settings,
+            )
+            judge_renderer, judges = build_judges(bundle, sessions, settings=settings)
+            handlers[ONLINE_JUDGE_JOB_KIND] = build_online_judge_handler(
+                sessions,
+                renderer=judge_renderer,
+                judges=judges,
+            )
+        handlers[EVALUATION_JOB_KIND] = build_evaluation_job_handler(
+            sessions,
+            search=search,
+            datasets=bundle.datasets,
+            variants=bundle.variants,
+            answer_service=answer_service,
+            judge_renderer=judge_renderer,
+            judges=judges,
+        )
         worker = JobWorker(
             sessions,
-            handlers={
-                EVALUATION_JOB_KIND: build_evaluation_job_handler(
-                    sessions,
-                    search=search,
-                    datasets=bundle.datasets,
-                    variants=bundle.variants,
-                )
-            },
+            handlers=handlers,
             worker_id=arguments.worker_id,
             lease_seconds=arguments.lease_seconds or settings.worker_lease_seconds,
             poll_interval_seconds=(
@@ -301,6 +412,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return asyncio.run(_gate_evaluation(arguments))
     if arguments.command == "eval" and arguments.evaluation_command == "baseline":
         return asyncio.run(_write_baseline(arguments))
+    if arguments.command == "eval" and arguments.evaluation_command == "calibrate":
+        return asyncio.run(_calibrate_judges(arguments))
     if arguments.command == "worker":
         return asyncio.run(_run_worker(arguments))
     parser.print_help()

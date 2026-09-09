@@ -15,7 +15,9 @@ from ragops.contracts import (
     LatencySummary,
     MetricSummary,
     QueryResult,
+    SciFactLabel,
 )
+from ragops.evaluation.answer_metrics import macro_f1
 from ragops.evaluation.retrieval_metrics import RETRIEVAL_METRIC_NAMES
 
 DEFAULT_BOOTSTRAP_RESAMPLES = 2_000
@@ -24,6 +26,17 @@ _METRIC_LABELS = {
     "recall_at_10": "Recall@10",
     "recall_at_100": "Recall@100",
     "mrr_at_10": "MRR@10",
+    "citation_validity": "Citation validity",
+    "context_precision": "Context precision",
+    "abstention_correctness": "Abstention correctness",
+    "scifact_label_accuracy": "SciFact label accuracy",
+    "scifact_rationale_precision": "SciFact rationale precision",
+    "scifact_macro_f1": "SciFact macro-F1",
+    "faithfulness": "Faithfulness",
+    "relevance": "Answer relevance",
+    "secondary.faithfulness": "Secondary judge faithfulness",
+    "secondary.relevance": "Secondary judge relevance",
+    "cost_usd_per_query": "Cost (USD/query)",
 }
 
 
@@ -182,6 +195,16 @@ def build_evaluation_report(
             paired_values[(result.variant, metric)][result.query_id] = value
         for timing in result.stage_timings:
             latency_values[(result.variant, timing.stage)].append(timing.duration_ms)
+        for metric, value in result.deterministic_scores.items():
+            if metric not in RETRIEVAL_METRIC_NAMES:
+                metric_values[(result.variant, metric)].append(value)
+        for metric, value in result.judge_scores.items():
+            report_metric = metric.removeprefix("default.")
+            metric_values[(result.variant, report_metric)].append(value)
+        if result.answer is not None:
+            metric_values[(result.variant, "cost_usd_per_query")].append(
+                float(result.token_cost_usd)
+            )
 
     expected_per_variant = run.progress.total_queries // len(run.spec.variants)
     metrics: list[MetricSummary] = []
@@ -207,6 +230,58 @@ def build_evaluation_report(
                     interval_low=interval_low,
                     interval_high=interval_high,
                     query_count=len(ordered_values),
+                )
+            )
+
+        additional_names = sorted(
+            metric
+            for result_variant, metric in metric_values
+            if result_variant == variant and metric not in RETRIEVAL_METRIC_NAMES
+        )
+        for metric in additional_names:
+            values = metric_values[(variant, metric)]
+            interval_low, interval_high = _bootstrap_mean_interval(
+                values,
+                seed=_derived_seed(run.spec.seed, variant, metric),
+                resamples=bootstrap_resamples,
+            )
+            metrics.append(
+                MetricSummary(
+                    metric=metric,
+                    variant=variant,
+                    mean=_mean(values),
+                    interval_low=interval_low,
+                    interval_high=interval_high,
+                    query_count=len(values),
+                )
+            )
+        scifact_results = [
+            result
+            for result in results
+            if result.variant == variant
+            and result.scifact_gold_label is not None
+            and result.answer is not None
+        ]
+        if scifact_results:
+            gold_labels: list[SciFactLabel] = []
+            predicted_labels: list[SciFactLabel | None] = []
+            for result in scifact_results:
+                assert result.scifact_gold_label is not None
+                assert result.answer is not None
+                gold_labels.append(SciFactLabel(result.scifact_gold_label))
+                predicted_labels.append(result.answer.verification_label)
+            score = macro_f1(
+                gold_labels,
+                predicted_labels,
+            )
+            metrics.append(
+                MetricSummary(
+                    metric="scifact_macro_f1",
+                    variant=variant,
+                    mean=score,
+                    interval_low=score,
+                    interval_high=score,
+                    query_count=len(scifact_results),
                 )
             )
 
@@ -246,8 +321,11 @@ def build_evaluation_report(
 def render_markdown_report(report: EvaluationReport) -> str:
     """Render a stable Markdown report suitable for versioned artifacts."""
     run = report.run
+    title = (
+        "Retrieval and answer evaluation" if run.spec.generation_enabled else "Retrieval evaluation"
+    )
     lines = [
-        f"# Retrieval evaluation `{run.id}`",
+        f"# {title} `{run.id}`",
         "",
         f"- Dataset: `{run.spec.dataset}` (`{run.spec.split}`)",
         f"- Variants: {', '.join(f'`{variant}`' for variant in run.spec.variants)}",
@@ -258,12 +336,34 @@ def render_markdown_report(report: EvaluationReport) -> str:
             f"`{variant}`=`{fingerprint}`"
             for variant, fingerprint in sorted(run.index_fingerprints.items())
         ),
-        "",
-        "## Retrieval quality",
-        "",
-        "| Variant | Metric | Mean | 95% CI | Queries |",
-        "|---|---|---:|---:|---:|",
     ]
+    if run.spec.generation_enabled:
+        lines.extend(
+            [
+                f"- Generator: `{run.spec.generator_profile}` using "
+                f"`{run.spec.generation_prompt_version}`",
+                "- Generated variants: "
+                + ", ".join(
+                    f"`{variant}`"
+                    for variant in (run.spec.generation_variants or run.spec.variants)
+                ),
+                "- Judges: "
+                + (
+                    ", ".join(f"`{profile}`" for profile in run.spec.judge_profiles)
+                    if run.spec.judge_profiles
+                    else "none"
+                ),
+            ]
+        )
+    lines.extend(
+        [
+            "",
+            "## Quality metrics",
+            "",
+            "| Variant | Metric | Mean | 95% CI | Queries |",
+            "|---|---|---:|---:|---:|",
+        ]
+    )
     lines.extend(
         "| "
         f"{summary.variant} | {_METRIC_LABELS.get(summary.metric, summary.metric)} | "

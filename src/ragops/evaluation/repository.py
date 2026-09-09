@@ -1,5 +1,6 @@
 """Persistence operations used by retrieval evaluation execution."""
 
+from decimal import Decimal
 from typing import Any, Protocol
 from uuid import UUID
 
@@ -8,7 +9,7 @@ from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ragops.contracts import EvaluationQuery, QueryResult
+from ragops.contracts import AnswerResponse, EvaluationQuery, JudgeVerdict, QueryResult
 from ragops.persistence.models import (
     DatasetRow,
     DocumentRow,
@@ -29,6 +30,26 @@ class EvaluationDataRepository(Protocol):
     async def load_results(self, run_id: UUID) -> tuple[QueryResult, ...]: ...
 
     async def add_result(self, result: QueryResult, *, query_id: UUID) -> bool: ...
+
+    async def update_answer(
+        self,
+        *,
+        run_id: UUID,
+        query_id: UUID,
+        variant: str,
+        answer: AnswerResponse,
+        deterministic_scores: dict[str, float],
+        scifact_gold_label: str | None,
+    ) -> None: ...
+
+    async def update_judges(
+        self,
+        *,
+        run_id: UUID,
+        query_id: UUID,
+        variant: str,
+        verdicts: dict[str, JudgeVerdict],
+    ) -> None: ...
 
 
 class SqlAlchemyEvaluationDataRepository:
@@ -71,6 +92,7 @@ class SqlAlchemyEvaluationDataRepository:
                 external_id=query.external_id,
                 text=query.text,
                 qrels=qrels_by_query.get(query.id, {}),
+                metadata=query.query_metadata,
             )
             for query in queries
         )
@@ -103,6 +125,8 @@ class SqlAlchemyEvaluationDataRepository:
                     "answer": row.generation_record,
                     "deterministic_scores": row.deterministic_scores,
                     "judge_scores": row.judge_scores,
+                    "judge_records": row.judge_records,
+                    "scifact_gold_label": row.scifact_gold_label,
                     "token_cost_usd": row.token_cost_usd,
                 }
             )
@@ -121,6 +145,11 @@ class SqlAlchemyEvaluationDataRepository:
             ),
             "deterministic_scores": result.deterministic_scores,
             "judge_scores": result.judge_scores,
+            "judge_records": {
+                profile: verdict.model_dump(mode="json")
+                for profile, verdict in result.judge_records.items()
+            },
+            "scifact_gold_label": result.scifact_gold_label,
             "token_cost_usd": result.token_cost_usd,
         }
         dialect = self._session.get_bind().dialect.name
@@ -152,3 +181,61 @@ class SqlAlchemyEvaluationDataRepository:
             run.completed_queries = completed
             await self._session.flush()
         return inserted
+
+    async def update_answer(
+        self,
+        *,
+        run_id: UUID,
+        query_id: UUID,
+        variant: str,
+        answer: AnswerResponse,
+        deterministic_scores: dict[str, float],
+        scifact_gold_label: str | None,
+    ) -> None:
+        row = await self._session.scalar(
+            select(EvalQueryResultRow).where(
+                EvalQueryResultRow.eval_run_id == run_id,
+                EvalQueryResultRow.query_id == query_id,
+                EvalQueryResultRow.variant == variant,
+            )
+        )
+        if row is None:
+            raise KeyError(f"evaluation result not found for {query_id}/{variant}")
+        if row.generation_record is None:
+            row.generation_record = answer.model_dump(mode="json")
+            row.deterministic_scores = {**row.deterministic_scores, **deterministic_scores}
+            row.scifact_gold_label = scifact_gold_label
+            row.token_cost_usd = Decimal(str(row.token_cost_usd)) + answer.usage.cost_usd
+            await self._session.flush()
+
+    async def update_judges(
+        self,
+        *,
+        run_id: UUID,
+        query_id: UUID,
+        variant: str,
+        verdicts: dict[str, JudgeVerdict],
+    ) -> None:
+        row = await self._session.scalar(
+            select(EvalQueryResultRow).where(
+                EvalQueryResultRow.eval_run_id == run_id,
+                EvalQueryResultRow.query_id == query_id,
+                EvalQueryResultRow.variant == variant,
+            )
+        )
+        if row is None:
+            raise KeyError(f"evaluation result not found for {query_id}/{variant}")
+        records = dict(row.judge_records)
+        scores = dict(row.judge_scores)
+        new_cost = Decimal("0")
+        for profile, verdict in verdicts.items():
+            if profile in records:
+                continue
+            records[profile] = verdict.model_dump(mode="json")
+            scores[f"{profile}.faithfulness"] = verdict.faithfulness
+            scores[f"{profile}.relevance"] = verdict.relevance
+            new_cost += verdict.usage.cost_usd
+        row.judge_records = records
+        row.judge_scores = scores
+        row.token_cost_usd = Decimal(str(row.token_cost_usd)) + new_cost
+        await self._session.flush()

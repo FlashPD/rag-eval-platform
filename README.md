@@ -157,10 +157,48 @@ exactly; it just should not be quoted as a headline result.
 - Repository-provisioned Prometheus, Tempo, and Grafana configuration, including a service-health
   dashboard for request rate, HTTP P95 latency, and retrieval-stage P95 latency. Traces flow from
   the API through the OpenTelemetry Collector into Tempo.
-- A pull-request regression job that starts pgvector, migrates the database, ingests the checked-in
-  fixture, runs a deterministic retrieval evaluation, and gates it against a committed fixture
-  baseline. The fixture baseline and all three 50-query real-dataset baselines include index
-  fingerprints.
+- Pull-request regression jobs that start pgvector and gate both the checked-in fixture and a
+  three-dataset matrix against committed baselines. The real-dataset jobs restore content-addressed
+  PostgreSQL index snapshots when available, validate them through idempotent ingestion, run all
+  four variants on the seed-42 50-query slices, and upload their reports. Cache misses build and
+  save the checksum-pinned corpus, BM25 artifact, and embeddings before evaluation.
+- Provider-neutral `Answerer` and `Generator` protocols with strict contracts for rendered prompts,
+  structured cited answers, provider/model provenance, token usage, and deterministic citation
+  validation. Invalid, duplicate, missing-inline, and abstention-inconsistent citations are
+  reported explicitly instead of being repaired.
+- A reviewed `answer-v1` system prompt and deterministic renderer that rank-orders contexts and
+  escapes the question, identifiers, titles, and passage text into an explicitly untrusted XML
+  block. Each rendered request has a content hash suitable for response-cache keys, and the prompt
+  asset is included in the runtime image.
+- A provider-neutral `CitedAnswerer` orchestrator that renders requests, calls a configured
+  generator, validates citations, and classifies successful answers, evidence-based abstentions,
+  citation errors, schema failures, refusals, provider failures, and timeouts. Responses retain the
+  exact contexts, model and prompt provenance, provider request identifier, usage, cost, and trace.
+- An immutable PostgreSQL generation cache keyed by provider, model parameters, prompt version,
+  response schema, and rendered prompt content. A provider-neutral caching decorator reuses the
+  structured output on unchanged requests, reports zero incremental token usage and cost, removes
+  the stale provider request identifier, and never caches failures.
+- An OpenAI Responses API adapter using pinned GPT-5.4 snapshots, strict structured outputs,
+  configurable reasoning effort, explicit refusal/timeout/provider failure handling, one schema
+  repair attempt, stable prompt-cache keys, cached-token accounting, and configuration-driven cost.
+- `POST /v1/answer`, which retrieves a named dataset/variant, assigns stable local passage IDs,
+  returns a validated cited answer with complete provenance, and can asynchronously sample live
+  answers without adding judge latency to the request path.
+- A resumable answer-evaluation path layered onto the retrieval runner. It deterministically samples
+  generation queries and variants, resumes independently at retrieval, generation, and judging,
+  and reports citation validity, context precision, abstention correctness, provider cost, primary
+  and secondary judge faithfulness/relevance, plus SciFact three-way macro-F1 and rationale
+  precision from the benchmark's original evidence metadata.
+- Versioned, injection-resistant SciFact and judge prompts; a separately configured primary and
+  secondary OpenAI judge; immutable judge-response caching; judge-model/prompt comparability checks
+  in baselines; and a calibration command that publishes Cohen's kappa from human-authored JSONL.
+- A deterministic online evaluation sampler backed by the durable worker queue, persistent online
+  answer/judge records, generation and judge Prometheus metrics, and a provisioned Grafana quality
+  dashboard for judge scores, outcomes, latency, cache behavior, and cost.
+- A weekly and manually dispatchable scheduled workflow that restores the cross-domain index
+  snapshots, runs full retrieval plus a 200-query answer/judge sample on each dataset's strongest
+  retrieval variant, uploads reproducible JSON and Markdown reports, gates against a published
+  answer baseline when present, and opens a deduplicated issue on regression.
 
 All three real corpora are fully ingested in live PostgreSQL with ready indexes: SciFact has 5,183
 documents and 300 test queries, NFCorpus has 3,633 and 323, and FiQA has 57,638 and 648. Every
@@ -171,11 +209,13 @@ invocation inserted only the remaining 39,246, and a final rerun inserted zero. 
 dense retrieval was 67 ms; reranking dominated at 3.11 s P95, well above the phase-1 600 ms target.
 
 The checked-in `fixtures/tiny-beir` corpus backs the integration tests and needs no download. The
-suite passes 101 tests along with Ruff and strict mypy. The complete core Compose stack has also
-been validated on Apple Silicon: the API and PostgreSQL report healthy, the migration exits
-successfully, the worker polls for jobs, Prometheus scrapes application metrics, Tempo accepts
-traces, and the provisioned Grafana dashboard displays live metrics. A retrieval run executed
-inside the Compose stack also passed the gate against the packaged, read-only fixture baseline.
+suite passes 169 tests along with Ruff and strict mypy. Provider calls are exercised with recorded
+HTTP responses, so the default suite is deterministic and has no API spend. The complete core
+Compose stack has also been validated on Apple Silicon: the API and PostgreSQL report healthy, the
+migration exits successfully, the worker polls for jobs, Prometheus scrapes application metrics,
+Tempo accepts traces, and the provisioned Grafana dashboard displays live metrics. A retrieval run
+executed inside the Compose stack also passed the gate against the packaged, read-only fixture
+baseline.
 
 ## Getting started
 
@@ -272,6 +312,24 @@ curl http://127.0.0.1:8000/v1/search \
 Responses include document text, final ranks, every available stage score, per-stage latencies, the
 variant configuration hash, and a trace identifier. Embedding and reranker models load on first use.
 
+### Cited answers
+
+Set `RAGOPS_OPENAI_API_KEY`, ingest the requested dataset, and call the same retrieval variants
+through the cited-answer endpoint:
+
+```bash
+export RAGOPS_OPENAI_API_KEY='your-key'
+curl http://127.0.0.1:8000/v1/answer \
+  --header 'content-type: application/json' \
+  --data '{"query":"Vitamin C health effects","dataset":"scifact","variant":"dense_bge_small","generator_profile":"default"}'
+```
+
+The default generator is the pinned `gpt-5.4-mini-2026-03-17` snapshot. The response contains the
+exact retrieved contexts, stable citations, validation outcome, model and prompt hashes, token use,
+incremental cost, provider request ID, and cache status. Repeating an unchanged request uses the
+PostgreSQL response cache; OpenAI prompt-cache usage is recorded separately when reported by the
+provider.
+
 ## Evaluation
 
 ### Running an evaluation
@@ -346,13 +404,50 @@ corpus, embedding and HNSW configuration, and BM25 artifact; unlike a database U
 when an identical index is rebuilt in CI. The gate rejects a different fingerprint or variant
 configuration hash before comparing scores.
 
-The pull-request workflow exercises this path end to end against the checked-in two-query fixture:
-it starts pgvector, applies migrations, ingests and indexes the fixture, runs BM25, and gates the
-result against `evals/baselines/fixture.json`. This is a fast correctness canary; the 50-query
-baselines at `evals/baselines/scifact.json`, `nfcorpus.json`, and `fiqa.json` are deterministic
-cross-domain quality canaries for retrieval changes. Reproduce any one with all four variants,
-`--sample-size 50`, and `--seed 42`; the baseline itself pins the sample definition, variant hashes,
-and index fingerprint.
+The pull-request workflow exercises this path first against the checked-in two-query fixture as a
+fast correctness canary. A matrix then runs all four variants for the deterministic 50-query
+SciFact, NFCorpus, and FiQA slices and gates them against `evals/baselines/<dataset>.json`. Each job
+uploads its JSON and Markdown reports, including the per-metric gate diff. Reproduce any matrix job
+with `--sample-size 50` and `--seed 42`; the baseline itself pins the sample definition, variant
+hashes, and index fingerprint.
+
+Hosted jobs cache each corpus's logical PostgreSQL snapshot separately from model weights. The
+index-cache key covers the dataset and model manifests, migrations, locked dependencies, and the
+code that constructs and persists an index. A cache hit restores the snapshot and reruns ingestion
+as an idempotency check. A miss performs the full checksum-validated download and embedding build,
+saves the cache immediately, and then evaluates. The workflow also supports manual dispatch so a
+maintainer can warm new cache keys before opening retrieval-changing pull requests.
+
+### Answer evaluation and judge calibration
+
+Run retrieval across all variants while generating only for the domain's selected answer variant:
+
+```bash
+.venv/bin/ragops eval run \
+  --dataset scifact \
+  --variants bm25,dense_bge_small,hybrid_rrf,hybrid_rrf_rerank \
+  --generation \
+  --generation-sample-size 200 \
+  --generation-variants dense_bge_small \
+  --generator-profile default \
+  --judge-profiles default,secondary
+```
+
+SciFact automatically uses `scifact-v1`; NFCorpus and FiQA use `answer-v1`. The scheduled workflow
+uses the same 200-query seed-42 slices and selects `dense_bge_small` for SciFact/FiQA and
+`hybrid_rrf_rerank` for NFCorpus, matching the cross-domain retrieval results above.
+
+Judge agreement is intentionally not self-labeled. After a human reviews roughly 100 mixed-domain
+rows following [`evals/calibration/README.md`](evals/calibration/README.md), publish the report with:
+
+```bash
+.venv/bin/ragops eval calibrate \
+  --labels evals/calibration/labels.jsonl \
+  --judge-profiles default,secondary
+```
+
+This writes `evals/calibration/report.md` with faithfulness and relevance Cohen's kappa. No judge
+quality claim should be published until those labels have been independently reviewed.
 
 ### Queued runs and workers
 
@@ -383,16 +478,21 @@ reached, and because the runner skips work already committed, a redelivered job 
 persisted query rather than restarting. `SIGINT` and `SIGTERM` stop the worker after the job in
 flight finishes.
 
-## Not built yet
+## Remaining work
 
-The CPU-first Docker image, core Compose stack, optional full Langfuse profile, provisioned service
-dashboard, OpenTelemetry trace export, Prometheus metrics, pull-request smoke gate, and portable
-index provenance are implemented and have been exercised together on Docker Desktop for macOS.
+Phase 2's local implementation is complete, but its empirical acceptance evidence is deliberately
+not fabricated. A maintainer still needs to add the `OPENAI_API_KEY` Actions secret, run the
+scheduled workflow to publish the three answer reports and their reviewed baselines, author and
+review the human calibration labels, publish the kappa report, and record answer latency on the
+reference hardware. A complete answer trace should also be confirmed in the optional Langfuse
+profile; OpenTelemetry spans and model/cost attributes are emitted, but that UI check requires a
+configured Langfuse project.
 
-Generation and LLM-as-judge scoring, the online evaluation sampler, and the Terraform path to ECS
-are still ahead. The PR workflow uses the tiny fixture for fast end-to-end coverage; promoting the
-three 50-query real-dataset gates into hosted CI will require a durable cache
-for the three real-corpus indexes and embeddings so every pull request does not rebuild them.
+The remaining product phases are AWS deployment (Terraform, OIDC, ECR/ECS/RDS/S3, scanning,
+CloudWatch, and deployed evaluation) and final portfolio packaging (ADRs, model card, screenshots,
+release tag, and the external `deep-research` scoring adapter). The real-dataset CI matrix is slow
+the first time a content-derived cache key is built—especially for FiQA—but subsequent runs restore
+the durable index snapshots.
 
 ## Design
 

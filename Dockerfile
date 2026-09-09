@@ -23,6 +23,7 @@ RUN python -m pip install --no-cache-dir -r requirements-dev.lock \
 COPY alembic.ini ./
 COPY migrations ./migrations
 COPY config ./config
+COPY prompts ./prompts
 COPY fixtures ./fixtures
 COPY evals/baselines ./evals/baselines
 

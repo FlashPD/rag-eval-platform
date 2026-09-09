@@ -1,7 +1,10 @@
 """Typed contracts shared across ragops boundaries."""
 
 from ragops.contracts.evaluation import (
+    AnswerMetricScores,
     BaselineDocument,
+    CalibrationAgreement,
+    CalibrationLabel,
     Comparison,
     EvalProgress,
     EvalRun,
@@ -12,6 +15,8 @@ from ragops.contracts.evaluation import (
     GateMetricResult,
     GateResult,
     JudgeClaimVerdict,
+    JudgeOutput,
+    JudgeRequest,
     JudgeVerdict,
     LatencySummary,
     MetricSummary,
@@ -22,9 +27,14 @@ from ragops.contracts.evaluation import (
 from ragops.contracts.generation import (
     AnswerRequest,
     AnswerResponse,
+    CitationValidation,
+    CitedAnswer,
     Confidence,
     GenerationOutcome,
+    GenerationRequest,
+    GenerationResult,
     Passage,
+    SciFactLabel,
     TokenUsage,
 )
 from ragops.contracts.ingestion import (
@@ -37,7 +47,13 @@ from ragops.contracts.ingestion import (
     SourceQrel,
     SourceQuery,
 )
-from ragops.contracts.jobs import EVALUATION_JOB_KIND, Job, JobSpec, JobStatus
+from ragops.contracts.jobs import (
+    EVALUATION_JOB_KIND,
+    ONLINE_JUDGE_JOB_KIND,
+    Job,
+    JobSpec,
+    JobStatus,
+)
 from ragops.contracts.resources import (
     Dataset,
     DocumentEmbedding,
@@ -59,10 +75,16 @@ from ragops.contracts.retrieval import (
 
 __all__ = [
     "EVALUATION_JOB_KIND",
+    "ONLINE_JUDGE_JOB_KIND",
+    "AnswerMetricScores",
     "AnswerRequest",
     "AnswerResponse",
     "ArtifactReference",
     "BaselineDocument",
+    "CalibrationAgreement",
+    "CalibrationLabel",
+    "CitationValidation",
+    "CitedAnswer",
     "Comparison",
     "Confidence",
     "Dataset",
@@ -78,6 +100,8 @@ __all__ = [
     "GateMetricResult",
     "GateResult",
     "GenerationOutcome",
+    "GenerationRequest",
+    "GenerationResult",
     "IndexBuildState",
     "IndexVersion",
     "IndexVersionSpec",
@@ -86,6 +110,8 @@ __all__ = [
     "JobSpec",
     "JobStatus",
     "JudgeClaimVerdict",
+    "JudgeOutput",
+    "JudgeRequest",
     "JudgeVerdict",
     "LatencySummary",
     "LoadedDataset",
@@ -97,6 +123,7 @@ __all__ = [
     "RankedHit",
     "RerankStageConfig",
     "RetrievalMetricScores",
+    "SciFactLabel",
     "SearchRequest",
     "SearchResponse",
     "SourceDocument",

@@ -22,6 +22,7 @@ class SourceDocument(Contract):
 class SourceQuery(Contract):
     external_id: str = Field(min_length=1, max_length=255)
     text: str = Field(min_length=1)
+    metadata: dict[str, object] = Field(default_factory=dict)
 
 
 class SourceQrel(Contract):
