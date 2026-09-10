@@ -10,6 +10,11 @@ Secrets Manager, CloudWatch, and X-Ray. Infrastructure is split into two Terrafo
 The split prevents the stack from trying to create the bucket and role needed to manage its own
 state. Bootstrap state stays local and contains no application secrets; store its state securely.
 
+Before applying the application stack, provision and validate an ACM certificate in the deployment
+region and set `load_balancer_certificate_arn` in `terraform.tfvars`. Create a DNS alias for the
+load balancer after apply. The HTTP listener redirects to HTTPS and the API is served only through
+the TLS listener.
+
 ## Security and cost choices
 
 - RDS is always private, encrypted, backed up for seven days, and uses an RDS-managed master
@@ -49,6 +54,9 @@ repository variables from the bootstrap outputs:
 | `AWS_TERRAFORM_PLAN_ROLE_ARN` | `terraform_plan_role_arn` |
 | `AWS_TERRAFORM_APPLY_ROLE_ARN` | `terraform_apply_role_arn` |
 
+Also set `AWS_ACM_CERTIFICATE_ARN` to the validated certificate ARN. Unlike the four bootstrap
+outputs, this value comes from the certificate you provisioned for the public API hostname.
+
 The trust policies bind the plan role to this repository's `dev` branch and the apply role to the
 protected environment. No AWS access keys are stored in GitHub.
 
@@ -78,9 +86,48 @@ aws secretsmanager put-secret-value \
   --secret-string file://openai-secret.txt
 ```
 
-The local file must contain only the API key and should be deleted securely afterward. ECS task
-definitions are the next Phase 3 slice; they will consume this secret and the RDS-managed JSON
-secret by ARN.
+The local file must contain only the API key and should be deleted securely afterward.
+
+## ECS runtime
+
+The application stack defines an ECS cluster, public Application Load Balancer, API and worker
+services, and one-off migration and utility task definitions. Task containers run as UID 10001,
+drop Linux capabilities, use read-only root filesystems with explicit scratch/artifact mounts, and
+write logs to workload-specific CloudWatch log groups. API tasks use regular Fargate capacity;
+resumable workers use Fargate Spot by default.
+
+RDS host metadata is injected as ordinary environment configuration. The RDS-managed JSON secret's
+`username` and `password` keys are injected directly by ECS, so neither credential enters Terraform
+state or an image. The task execution role can read only the RDS and OpenAI secrets, while the task
+role is limited to the artifact bucket, its KMS key, CloudWatch metrics, and X-Ray.
+
+The initial apply uses a placeholder image reference and forces both services to zero tasks. After
+an image has been pushed to ECR, register its immutable digest without starting services:
+
+```bash
+terraform -chdir=infra/aws apply \
+  -var='application_image_digest=sha256:YOUR_ECR_DIGEST' \
+  -var='api_desired_count=0' \
+  -var='worker_desired_count=0'
+```
+
+Run the migration task with the network configuration exported by Terraform, wait for it to stop,
+and require container exit code zero before scaling either service. The upcoming deployment workflow
+automates these AWS CLI steps; the underlying values are available as
+`ecs_cluster_name`, `migration_task_definition_arn`, and `ecs_network_configuration_json` outputs.
+
+After a successful migration, start the services:
+
+```bash
+terraform -chdir=infra/aws apply \
+  -var='application_image_digest=sha256:YOUR_ECR_DIGEST'
+```
+
+Use the utility task definition with an ECS command override for one-off operations such as
+`ragops ingest --dataset scifact` or `ragops eval report RUN_ID`. It receives the same database and
+artifact configuration as the services, and completed ingestion/report artifacts are published to
+the private S3 bucket before the task exits.
+
 
 ## Teardown
 

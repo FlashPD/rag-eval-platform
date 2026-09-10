@@ -9,7 +9,7 @@ output "ecr_repository_url" {
 }
 
 output "database_endpoint" {
-  description = "Private RDS endpoint consumed by future ECS task definitions."
+  description = "Private RDS endpoint consumed by ECS task definitions."
   value       = aws_db_instance.this.address
 }
 
@@ -49,4 +49,42 @@ output "task_execution_role_arn" {
 
 output "application_task_role_arn" {
   value = aws_iam_role.application_task.arn
+}
+
+output "ecs_cluster_name" {
+  value = aws_ecs_cluster.this.name
+}
+
+output "api_service_name" {
+  value = aws_ecs_service.api.name
+}
+
+output "worker_service_name" {
+  value = aws_ecs_service.worker.name
+}
+
+output "migration_task_definition_arn" {
+  value = aws_ecs_task_definition.migration.arn
+}
+
+output "utility_task_definition_arn" {
+  value = aws_ecs_task_definition.utility.arn
+}
+
+output "ecs_network_configuration_json" {
+  description = "AWS CLI network configuration for migration and utility run-task calls."
+  value = jsonencode({
+    awsvpcConfiguration = {
+      subnets = var.nat_gateway_mode == "none" ? (
+        [for subnet in aws_subnet.public : subnet.id]
+      ) : [for subnet in aws_subnet.private : subnet.id]
+      securityGroups = [aws_security_group.application.id]
+      assignPublicIp = var.nat_gateway_mode == "none" ? "ENABLED" : "DISABLED"
+    }
+  })
+}
+
+output "application_url" {
+  description = "Public HTTPS endpoint. Use a DNS alias matching the configured ACM certificate."
+  value       = "https://${aws_lb.api.dns_name}"
 }

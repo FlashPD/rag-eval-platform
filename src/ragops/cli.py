@@ -11,6 +11,7 @@ from pathlib import Path
 from uuid import UUID
 
 from ragops import __version__
+from ragops.artifact_store import build_artifact_store
 from ragops.config import Settings, load_config_bundle
 from ragops.contracts import EVALUATION_JOB_KIND, ONLINE_JUDGE_JOB_KIND, EvalRunSpec
 from ragops.evaluation import (
@@ -133,6 +134,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 async def _ingest(arguments: argparse.Namespace) -> int:
     settings = Settings()
+    artifact_store = build_artifact_store(settings)
+    await artifact_store.hydrate_ingestion()
     bundle = load_config_bundle(settings.configuration_directory)
     manifest = bundle.datasets.get(arguments.dataset)
     profile = bundle.models.embeddings["default"]
@@ -161,6 +164,7 @@ async def _ingest(arguments: argparse.Namespace) -> int:
             write_batch_size=arguments.write_batch_size,
             embedding_batch_size=arguments.embedding_batch_size,
         )
+        await artifact_store.publish_ingestion(result.bm25_artifact.path)
         print(result.model_dump_json(indent=2))
         return 0
     finally:
@@ -169,6 +173,7 @@ async def _ingest(arguments: argparse.Namespace) -> int:
 
 async def _run_evaluation(arguments: argparse.Namespace) -> int:
     settings = Settings()
+    await build_artifact_store(settings).hydrate_runtime()
     bundle = load_config_bundle(settings.configuration_directory)
     manifest = bundle.datasets.get(arguments.dataset)
     spec = EvalRunSpec(
@@ -243,6 +248,7 @@ async def _run_evaluation(arguments: argparse.Namespace) -> int:
 
 async def _report_evaluation(arguments: argparse.Namespace) -> int:
     settings = Settings()
+    artifact_store = build_artifact_store(settings)
     engine = create_engine(settings.database_url)
     try:
         report = await get_evaluation_report(create_session_factory(engine), arguments.run_id)
@@ -252,6 +258,7 @@ async def _report_evaluation(arguments: argparse.Namespace) -> int:
             print(render_markdown_report(report), end="")
         if not arguments.no_save:
             markdown_path, json_path = write_report_files(report, arguments.output_dir)
+            await artifact_store.publish_report(report.run.id, (markdown_path, json_path))
             print(f"\nsaved {markdown_path} and {json_path}")
         return 0
     finally:
@@ -332,6 +339,7 @@ async def _calibrate_judges(arguments: argparse.Namespace) -> int:
 async def _run_worker(arguments: argparse.Namespace) -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     settings = Settings()
+    await build_artifact_store(settings).hydrate_runtime()
     bundle = load_config_bundle(settings.configuration_directory)
     engine = create_engine(settings.database_url)
     try:

@@ -1,6 +1,9 @@
 aws_region  = "us-east-1"
 environment = "production"
 
+# Provision and validate this ACM certificate before applying the application stack.
+load_balancer_certificate_arn = "arn:aws:acm:us-east-1:123456789012:certificate/00000000-0000-0000-0000-000000000000"
+
 # "none" is cheapest and assigns public IPs to ECS tasks while keeping RDS private.
 # Use "single" for private tasks with one NAT gateway or "per_az" for resilient egress.
 nat_gateway_mode = "none"
@@ -9,3 +12,15 @@ database_instance_class      = "db.t4g.micro"
 database_multi_az            = false
 database_deletion_protection = false
 database_skip_final_snapshot = true
+
+# The first apply leaves ECS services at zero tasks. Deployment automation sets
+# this to the immutable digest returned by ECR after pushing the image.
+# application_image_digest = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+api_cpu             = 1024
+api_memory_mib      = 4096
+api_desired_count   = 1
+worker_cpu           = 2048
+worker_memory_mib   = 8192
+worker_desired_count = 1
+worker_use_spot      = true

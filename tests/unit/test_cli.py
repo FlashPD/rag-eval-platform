@@ -24,6 +24,30 @@ from ragops.evaluation import read_baseline
 CONFIG_DIRECTORY = Path(__file__).parents[2] / "config"
 
 
+class FakeArtifactStore:
+    def __init__(self) -> None:
+        self.runtime_hydrations = 0
+        self.ingestion_hydrations = 0
+        self.published_ingestions: list[Path] = []
+        self.published_reports: list[tuple[object, tuple[Path, ...]]] = []
+
+    async def hydrate_runtime(self) -> int:
+        self.runtime_hydrations += 1
+        return 0
+
+    async def hydrate_ingestion(self) -> int:
+        self.ingestion_hydrations += 1
+        return 0
+
+    async def publish_ingestion(self, bm25_artifact: Path) -> int:
+        self.published_ingestions.append(bm25_artifact)
+        return 1
+
+    async def publish_report(self, run_id: object, files: tuple[Path, ...]) -> int:
+        self.published_reports.append((run_id, files))
+        return len(files)
+
+
 def test_cli_reports_version(capsys: pytest.CaptureFixture[str]) -> None:
     with pytest.raises(SystemExit, match="0"):
         main(["--version"])
@@ -59,6 +83,52 @@ def test_eval_run_parser_rejects_duplicate_variants() -> None:
         build_parser().parse_args(
             ["eval", "run", "--dataset", "scifact", "--variants", "bm25,bm25"]
         )
+
+
+def test_ingest_hydrates_and_publishes_cloud_artifacts(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, object] = {}
+    bm25_artifact = tmp_path / "artifacts" / "bm25" / ("a" * 64)
+
+    class FakeEngine:
+        async def dispose(self) -> None:
+            captured["disposed"] = True
+
+    class FakeIngestionService:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            captured["service_kwargs"] = kwargs
+
+        async def ingest(self, **kwargs: object) -> object:
+            captured["ingest_kwargs"] = kwargs
+            return SimpleNamespace(
+                bm25_artifact=SimpleNamespace(path=bm25_artifact),
+                model_dump_json=lambda **kwargs: "{}",
+            )
+
+    bundle = cli.load_config_bundle(CONFIG_DIRECTORY)
+    settings = SimpleNamespace(
+        configuration_directory=CONFIG_DIRECTORY,
+        database_url="sqlite+aiosqlite:///:memory:",
+        artifact_directory=tmp_path / "artifacts",
+        model_cache_directory=tmp_path / "models",
+    )
+    artifact_store = FakeArtifactStore()
+    monkeypatch.setattr(cli, "Settings", lambda: settings)
+    monkeypatch.setattr(cli, "build_artifact_store", lambda _: artifact_store)
+    monkeypatch.setattr(cli, "load_config_bundle", lambda _: bundle)
+    monkeypatch.setattr(cli, "create_engine", lambda _: FakeEngine())
+    monkeypatch.setattr(cli, "create_session_factory", lambda _: object())
+    monkeypatch.setattr(cli, "IngestionService", FakeIngestionService)
+    monkeypatch.setattr(cli, "SentenceTransformerEmbedder", lambda *args, **kwargs: object())
+
+    exit_code = main(["ingest", "--dataset", "fixture"])
+
+    assert exit_code == 0
+    assert artifact_store.ingestion_hydrations == 1
+    assert artifact_store.published_ingestions == [bm25_artifact]
+    assert captured["disposed"] is True
 
 
 def test_eval_baseline_paths_default_to_the_run_dataset() -> None:
@@ -122,7 +192,9 @@ def test_eval_run_command_builds_and_executes_spec(
     )
     sessions = object()
     search = object()
+    artifact_store = FakeArtifactStore()
     monkeypatch.setattr(cli, "Settings", lambda: settings)
+    monkeypatch.setattr(cli, "build_artifact_store", lambda _: artifact_store)
     monkeypatch.setattr(cli, "load_config_bundle", lambda _: bundle)
     monkeypatch.setattr(cli, "create_engine", lambda _: FakeEngine())
     monkeypatch.setattr(cli, "create_session_factory", lambda _: sessions)
@@ -155,6 +227,7 @@ def test_eval_run_command_builds_and_executes_spec(
     assert captured["disposed"] is True
     assert captured["git_commit"] == "commit-sha"
     assert captured["image_digest"] == "sha256:image"
+    assert artifact_store.runtime_hydrations == 1
     assert '"state": "completed"' in capsys.readouterr().out
 
 
@@ -208,7 +281,9 @@ def test_eval_report_command_renders_markdown(
 
     settings = SimpleNamespace(database_url="sqlite+aiosqlite:///:memory:")
     sessions = object()
+    artifact_store = FakeArtifactStore()
     monkeypatch.setattr(cli, "Settings", lambda: settings)
+    monkeypatch.setattr(cli, "build_artifact_store", lambda _: artifact_store)
     monkeypatch.setattr(cli, "create_engine", lambda _: FakeEngine())
     monkeypatch.setattr(cli, "create_session_factory", lambda _: sessions)
     monkeypatch.setattr(cli, "get_evaluation_report", fake_get_evaluation_report)
@@ -221,6 +296,15 @@ def test_eval_report_command_renders_markdown(
     assert f"# Retrieval evaluation `{run_id}`" in capsys.readouterr().out
     assert (tmp_path / str(run_id) / "report.md").exists()
     assert (tmp_path / str(run_id) / "report.json").exists()
+    assert artifact_store.published_reports == [
+        (
+            run_id,
+            (
+                tmp_path / str(run_id) / "report.md",
+                tmp_path / str(run_id) / "report.json",
+            ),
+        )
+    ]
 
 
 def test_eval_report_command_can_skip_archiving(
@@ -259,7 +343,9 @@ def test_eval_report_command_can_skip_archiving(
     async def fake_get_evaluation_report(sessions: object, requested: object) -> object:
         return report
 
+    artifact_store = FakeArtifactStore()
     monkeypatch.setattr(cli, "Settings", lambda: SimpleNamespace(database_url="sqlite://"))
+    monkeypatch.setattr(cli, "build_artifact_store", lambda _: artifact_store)
     monkeypatch.setattr(cli, "create_engine", lambda _: FakeEngine())
     monkeypatch.setattr(cli, "create_session_factory", lambda _: object())
     monkeypatch.setattr(cli, "get_evaluation_report", fake_get_evaluation_report)
@@ -268,6 +354,7 @@ def test_eval_report_command_can_skip_archiving(
 
     assert exit_code == 0
     assert not (tmp_path / str(run_id)).exists()
+    assert artifact_store.published_reports == []
     assert "saved" not in capsys.readouterr().out
 
 

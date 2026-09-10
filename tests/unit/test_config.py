@@ -77,3 +77,39 @@ def test_settings_use_ragops_environment_prefix(monkeypatch: pytest.MonkeyPatch)
     settings = Settings()
     assert settings.database_url == "sqlite+aiosqlite:///:memory:"
     assert settings.model_cache_directory == Path("tmp/model-cache")
+
+
+def test_settings_compose_an_ssl_rds_url_from_secret_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("RAGOPS_DATABASE_URL", raising=False)
+    monkeypatch.setenv("RAGOPS_DATABASE_HOST", "database.example.us-east-1.rds.amazonaws.com")
+    monkeypatch.setenv("RAGOPS_DATABASE_PORT", "5433")
+    monkeypatch.setenv("RAGOPS_DATABASE_NAME", "ragops_production")
+    monkeypatch.setenv("RAGOPS_DATABASE_USER", "application")
+    monkeypatch.setenv("RAGOPS_DATABASE_PASSWORD", "p@ss:/word")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.database_url == (
+        "postgresql+asyncpg://application:p%40ss%3A%2Fword@"
+        "database.example.us-east-1.rds.amazonaws.com:5433/ragops_production?ssl=require"
+    )
+    assert settings.database_password is not None
+    assert settings.database_password.get_secret_value() == "p@ss:/word"
+
+
+def test_settings_require_complete_database_components() -> None:
+    with pytest.raises(ValidationError, match="database_user, database_password"):
+        Settings(_env_file=None, database_host="database.example")
+
+
+def test_settings_reject_a_url_mixed_with_database_components() -> None:
+    with pytest.raises(ValidationError, match="either database_url or database component"):
+        Settings(
+            _env_file=None,
+            database_url="sqlite+aiosqlite:///:memory:",
+            database_host="database.example",
+            database_user="application",
+            database_password="secret",
+        )

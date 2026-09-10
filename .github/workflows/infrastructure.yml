@@ -30,6 +30,7 @@ env:
   TERRAFORM_VERSION: 1.14.6
   TF_IN_AUTOMATION: "true"
   TF_INPUT: "false"
+  TF_VAR_load_balancer_certificate_arn: ${{ vars.AWS_ACM_CERTIFICATE_ARN }}
 
 jobs:
   validate:
@@ -51,8 +52,11 @@ jobs:
         run: |
           terraform init -backend=false
           terraform validate
+      - name: Test application stack
+        working-directory: infra/aws
+        run: terraform test
       - name: Scan infrastructure configuration
-        uses: aquasecurity/trivy-action@0.36.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: config
           scan-ref: infra
@@ -65,7 +69,8 @@ jobs:
       github.event_name == 'push' &&
       vars.AWS_TERRAFORM_PLAN_ROLE_ARN != '' &&
       vars.AWS_TERRAFORM_STATE_BUCKET != '' &&
-      vars.AWS_TERRAFORM_STATE_KEY != ''
+      vars.AWS_TERRAFORM_STATE_KEY != '' &&
+      vars.AWS_ACM_CERTIFICATE_ARN != ''
     needs: validate
     runs-on: ubuntu-latest
     steps:
@@ -104,9 +109,14 @@ jobs:
       - name: Require deployment configuration
         env:
           APPLY_ROLE_ARN: ${{ vars.AWS_TERRAFORM_APPLY_ROLE_ARN }}
+          CERTIFICATE_ARN: ${{ vars.AWS_ACM_CERTIFICATE_ARN }}
           STATE_BUCKET: ${{ vars.AWS_TERRAFORM_STATE_BUCKET }}
           STATE_KEY: ${{ vars.AWS_TERRAFORM_STATE_KEY }}
-        run: test -n "${APPLY_ROLE_ARN}" && test -n "${STATE_BUCKET}" && test -n "${STATE_KEY}"
+        run: >-
+          test -n "${APPLY_ROLE_ARN}" &&
+          test -n "${CERTIFICATE_ARN}" &&
+          test -n "${STATE_BUCKET}" &&
+          test -n "${STATE_KEY}"
       - uses: aws-actions/configure-aws-credentials@v6.2.3
         with:
           role-to-assume: ${{ vars.AWS_TERRAFORM_APPLY_ROLE_ARN }}
