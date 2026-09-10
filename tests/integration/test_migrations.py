@@ -27,8 +27,11 @@ def test_initial_migration_upgrades_to_head(
         "documents",
         "eval_query_results",
         "eval_runs",
+        "generation_cache",
         "index_versions",
+        "judge_cache",
         "jobs",
+        "online_evaluations",
         "qrels",
         "queries",
     } <= tables

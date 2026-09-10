@@ -19,8 +19,11 @@ def test_core_metadata_contains_expected_tables() -> None:
         "eval_query_results",
         "eval_run_variants",
         "eval_runs",
+        "generation_cache",
         "index_versions",
+        "judge_cache",
         "jobs",
+        "online_evaluations",
         "qrels",
         "queries",
     }

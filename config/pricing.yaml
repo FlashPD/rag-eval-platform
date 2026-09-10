@@ -1,11 +1,10 @@
 providers:
-  anthropic:
-    claude-opus-5:
-      input_per_million_tokens: "5.00"
-      output_per_million_tokens: "25.00"
-    claude-sonnet-5:
-      input_per_million_tokens: "2.00"
-      output_per_million_tokens: "10.00"
-    claude-haiku-4-5:
-      input_per_million_tokens: "1.00"
-      output_per_million_tokens: "5.00"
+  openai:
+    gpt-5.4-2026-03-05:
+      input_per_million_tokens: "2.50"
+      cached_input_per_million_tokens: "0.25"
+      output_per_million_tokens: "15.00"
+    gpt-5.4-mini-2026-03-17:
+      input_per_million_tokens: "0.75"
+      cached_input_per_million_tokens: "0.075"
+      output_per_million_tokens: "4.50"

@@ -8,9 +8,15 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ragops.config import DatasetCatalog, LocalDatasetManifest, VariantRegistry
 from ragops.contracts import (
+    AnswerRequest,
+    AnswerResponse,
+    CitationValidation,
+    Confidence,
     EvalRunSpec,
     EvalRunState,
     EvaluationQuery,
+    GenerationOutcome,
+    Passage,
     QueryResult,
     RankedHit,
     RerankStageConfig,
@@ -18,6 +24,7 @@ from ragops.contracts import (
     SearchResponse,
     SparseStageConfig,
     StageTiming,
+    TokenUsage,
     VariantConfig,
 )
 from ragops.evaluation import (
@@ -66,6 +73,39 @@ class FakeSearchExecutor:
             trace_id=uuid4().hex,
             variant_hash=self._variants.get(request.variant).configuration_hash,
             index_fingerprint="f" * 64,
+        )
+
+
+class FakeAnswerService:
+    def __init__(self) -> None:
+        self.requests: list[AnswerRequest] = []
+
+    async def answer(self, request: AnswerRequest) -> AnswerResponse:
+        self.requests.append(request)
+        return AnswerResponse(
+            answer="Supported [1].",
+            citations=("[1]",),
+            abstained=False,
+            confidence=Confidence.HIGH,
+            contexts=(
+                Passage(
+                    local_id="[1]",
+                    document_id="doc-a",
+                    title="doc-a",
+                    text="Text for doc-a",
+                    retrieval_rank=1,
+                    retrieval_score=1,
+                ),
+            ),
+            usage=TokenUsage(input_tokens=10, output_tokens=2),
+            outcome=GenerationOutcome.OK,
+            trace_id=f"answer-{len(self.requests)}",
+            provider="openai",
+            model="test-model",
+            generator_configuration_hash="a" * 64,
+            prompt_version="answer-v1",
+            rendered_prompt_hash="b" * 64,
+            citation_validation=CitationValidation(valid=True),
         )
 
 
@@ -239,6 +279,45 @@ def test_runner_resumes_without_repeating_persisted_work() -> None:
         assert completed.state is EvalRunState.COMPLETED
         assert completed.progress.completed_queries == 2
         assert [request.query for request in search.requests] == ["second question"]
+        await engine.dispose()
+
+    asyncio.run(exercise())
+
+
+def test_runner_generates_only_the_seeded_variant_subset() -> None:
+    async def exercise() -> None:
+        engine = create_engine("sqlite+aiosqlite:///:memory:")
+        async with engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+        sessions = create_session_factory(engine)
+        await seed_dataset(sessions)
+        datasets, variants = build_catalogs()
+        answer_service = FakeAnswerService()
+
+        completed = await run_retrieval_evaluation(
+            sessions,
+            search=FakeSearchExecutor(variants),
+            datasets=datasets,
+            variants=variants,
+            spec=EvalRunSpec(
+                dataset="fixture",
+                variants=("bm25", "reranked"),
+                generation_enabled=True,
+                generation_sample_size=1,
+                generation_variants=("reranked",),
+                generator_profile="default",
+                generation_prompt_version="answer-v1",
+            ),
+            answer_service=answer_service,
+        )
+
+        assert completed.state is EvalRunState.COMPLETED
+        assert len(answer_service.requests) == 1
+        assert answer_service.requests[0].variant == "reranked"
+        assert answer_service.requests[0].prompt_version == "answer-v1"
+        async with sessions() as session:
+            results = (await session.scalars(select(EvalQueryResultRow))).all()
+        assert sum(row.generation_record is not None for row in results) == 1
         await engine.dispose()
 
     asyncio.run(exercise())

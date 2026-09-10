@@ -89,6 +89,9 @@ class QueryRow(TimestampMixin, Base):
     )
     external_id: Mapped[str] = mapped_column(String(255), nullable=False)
     text: Mapped[str] = mapped_column(Text, nullable=False)
+    query_metadata: Mapped[dict[str, Any]] = mapped_column(
+        "metadata", JSON, nullable=False, default=dict
+    )
 
 
 class QrelRow(TimestampMixin, Base):
@@ -205,9 +208,45 @@ class EvalQueryResultRow(TimestampMixin, Base):
     generation_record: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     deterministic_scores: Mapped[dict[str, float]] = mapped_column(JSON, nullable=False)
     judge_scores: Mapped[dict[str, float]] = mapped_column(JSON, nullable=False)
+    judge_records: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    scifact_gold_label: Mapped[str | None] = mapped_column(String(32))
     token_cost_usd: Mapped[Decimal] = mapped_column(
         Numeric(precision=18, scale=8), nullable=False, default=Decimal("0")
     )
+
+
+class GenerationCacheRow(TimestampMixin, Base):
+    __tablename__ = "generation_cache"
+
+    cache_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    provider: Mapped[str] = mapped_column(String(100), nullable=False)
+    model_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    generator_configuration_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    prompt_version: Mapped[str] = mapped_column(String(100), nullable=False)
+    rendered_prompt_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    response_schema: Mapped[str] = mapped_column(String(100), nullable=False)
+    result: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+
+
+class JudgeCacheRow(TimestampMixin, Base):
+    __tablename__ = "judge_cache"
+
+    cache_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    provider: Mapped[str] = mapped_column(String(100), nullable=False)
+    model_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    judge_configuration_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    prompt_version: Mapped[str] = mapped_column(String(100), nullable=False)
+    rendered_prompt_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    result: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+
+
+class OnlineEvaluationRow(TimestampMixin, Base):
+    __tablename__ = "online_evaluations"
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    trace_id: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    answer_record: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    judge_records: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False)
 
 
 class JobRow(TimestampMixin, Base):

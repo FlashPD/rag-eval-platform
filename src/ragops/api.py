@@ -8,8 +8,17 @@ from fastapi import FastAPI, HTTPException, Response, status
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from ragops.config import Settings, load_config_bundle
-from ragops.contracts import EvalRun, EvalRunSpec, SearchRequest, SearchResponse
+from ragops.contracts import (
+    AnswerRequest,
+    AnswerResponse,
+    EvalRun,
+    EvalRunSpec,
+    SearchRequest,
+    SearchResponse,
+)
 from ragops.evaluation import DatabaseEvaluationService, EvaluationService
+from ragops.generation.factory import build_answer_service
+from ragops.generation.service import AnswerService
 from ragops.persistence import create_engine, create_session_factory
 from ragops.provenance import resolve_git_commit, resolve_image_digest
 from ragops.retrieval.errors import (
@@ -27,6 +36,7 @@ from ragops.telemetry import configure_telemetry, instrument_fastapi, prometheus
 def create_app(
     search_service: SearchExecutor | None = None,
     evaluation_service: EvaluationService | None = None,
+    answer_service: AnswerService | None = None,
 ) -> FastAPI:
     """Build the FastAPI application."""
 
@@ -38,6 +48,7 @@ def create_app(
         engine: AsyncEngine | None = None
         needs_search = application.state.search_service is None
         needs_evaluation = application.state.evaluation_service is None
+        needs_answer = application.state.answer_service is None
         if needs_search or needs_evaluation:
             bundle = load_config_bundle(settings.configuration_directory)
             engine = create_engine(settings.database_url)
@@ -58,6 +69,14 @@ def create_app(
                     git_commit=resolve_git_commit(),
                     image_digest=resolve_image_digest(),
                 )
+            if needs_answer and settings.openai_api_key is not None:
+                assert application.state.search_service is not None
+                application.state.answer_service = build_answer_service(
+                    bundle,
+                    sessions,
+                    search=application.state.search_service,
+                    settings=settings,
+                )
         try:
             yield
         finally:
@@ -71,6 +90,7 @@ def create_app(
     )
     application.state.search_service = search_service
     application.state.evaluation_service = evaluation_service
+    application.state.answer_service = answer_service
     instrument_fastapi(application)
 
     @application.get("/healthz", tags=["operations"])
@@ -104,6 +124,31 @@ def create_app(
         except ArtifactNotFoundError as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
         except RetrievalLimitError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+
+    @application.post("/v1/answer", tags=["generation"])
+    async def answer(request: AnswerRequest) -> AnswerResponse:
+        service: AnswerService | None = application.state.answer_service
+        if service is None:
+            raise HTTPException(
+                status_code=503,
+                detail="answer generation is unavailable; configure RAGOPS_OPENAI_API_KEY",
+            )
+        try:
+            return await service.answer(request)
+        except KeyError as error:
+            raise HTTPException(status_code=404, detail=str(error.args[0])) from error
+        except DatasetNotIngestedError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except CompatibleIndexNotFoundError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        except ArtifactNotFoundError as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        except RetrievalLimitError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
 
     @application.post("/v1/evals", tags=["evaluation"], status_code=status.HTTP_202_ACCEPTED)

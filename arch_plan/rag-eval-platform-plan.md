@@ -6,7 +6,7 @@ This document defines a retrieval-augmented generation (RAG) service whose prima
 
 The platform exists to make one portfolio claim unmistakable: the author can make probabilistic LLM behavior measurable, observable, and safely deployable inside deterministic software boundaries. It complements the existing `deep-research` repository, which demonstrates agent orchestration, durable AWS workflows, and security controls but has no quantified evaluation, no telemetry dashboards, no container image, and no CI. The evaluation harness built here is deliberately generic so a later phase can point it at `deep-research` and give the flagship project a benchmark table of its own.
 
-Retrieval variants ship in four tiers: sparse (BM25), dense (sentence-transformer embeddings in pgvector), hybrid (reciprocal rank fusion of the two), and hybrid plus cross-encoder reranking. Generation uses Claude by default with a provider-neutral interface. Evaluation combines deterministic metrics computed from benchmark relevance judgments with a validated LLM-as-judge for answer faithfulness and relevance. Telemetry flows through OpenTelemetry to Prometheus and Grafana for service health and to a self-hosted Langfuse instance for LLM traces, token cost, and judge scores.
+Retrieval variants ship in four tiers: sparse (BM25), dense (sentence-transformer embeddings in pgvector), hybrid (reciprocal rank fusion of the two), and hybrid plus cross-encoder reranking. Generation uses OpenAI by default through a provider-neutral interface. Evaluation combines deterministic metrics computed from benchmark relevance judgments with a validated LLM-as-judge for answer faithfulness and relevance. Telemetry flows through OpenTelemetry to Prometheus and Grafana for service health and to a self-hosted Langfuse instance for LLM traces, token cost, and judge scores.
 
 Development is local-first with a one-command Docker Compose demo. The production path deploys the API and evaluation worker to Amazon ECS on Fargate with RDS Postgres, S3, and CloudWatch through Terraform, authenticated from GitHub Actions with OpenID Connect rather than long-lived keys.
 
@@ -88,7 +88,7 @@ CREATED
 | Sparse index | `bm25s` artifact on a bound volume | Same artifact in S3, loaded at service start | BM25 retrieval over the corpus version |
 | Artifacts | Local directory | Private versioned S3 bucket | Dataset archives, BM25 artifacts, evaluation reports, calibration labels |
 | Embedding and reranking models | sentence-transformers on CPU or Apple Metal | sentence-transformers on Fargate CPU, weights baked into the image | Query and document embeddings, cross-encoder reranking |
-| LLM providers | Anthropic API by default; OpenAI optional | Same, credentials from Secrets Manager | Answer generation and judging |
+| LLM provider | OpenAI Responses API | Same, credentials from Secrets Manager | Answer generation and judging |
 | LLM tracing | Langfuse self-hosted in Compose | Langfuse endpoint configured by environment; see section 14 | Traces, prompt and completion capture, token cost, judge scores, datasets |
 | Metrics and traces | OpenTelemetry Collector, Prometheus, Grafana, Tempo in Compose | AWS Distro for OpenTelemetry sidecar to CloudWatch metrics and X-Ray | Service-level dashboards and alarms |
 | Secrets | Ignored environment file | AWS Secrets Manager | Provider keys, Langfuse keys, API keys |
@@ -128,7 +128,7 @@ variants:
 - Input: the query and the top-k passages from a named variant, each labeled with a stable local identifier such as `[1]`.
 - The prompt places passages in a clearly delimited untrusted-data block, instructs the model to answer only from the passages, to cite passage identifiers inline, and to abstain when the passages do not answer the question.
 - Output is validated with a structured-output schema: `answer`, `citations` (list of passage identifiers), `abstained` (boolean), and `confidence` (categorical). A citation that does not refer to a supplied passage fails validation and is recorded as a citation error rather than repaired silently.
-- Provider requests go through a `Generator` protocol with Anthropic as the default implementation via the official SDK and OpenAI as an optional second implementation for cross-provider comparison. Model, effort, temperature, and max tokens are configuration.
+- Provider requests go through a `Generator` protocol with an OpenAI Responses API implementation via the official SDK. Model, reasoning effort, temperature, and max output tokens are configuration, so another provider can be added without changing evaluation contracts.
 - A response cache keyed by the hash of provider, model, parameters, prompt version, and rendered prompt lives in Postgres. Evaluation re-runs with unchanged inputs cost nothing and are bit-for-bit repeatable.
 - The stable system prompt and rubric are placed first and marked for prompt caching; the query and passages follow so the cached prefix survives across requests.
 
@@ -149,7 +149,7 @@ Evaluation is a library used by the CLI, the worker, and CI. It accepts any obje
 
 - Faithfulness: every claim in the answer is supported by a cited passage; scored per claim and aggregated.
 - Answer relevance: the answer addresses the question asked.
-- The judge model is configured separately from the generator. The default pairs Claude Opus 5 as generator with Claude Opus 5 as judge, and a second judge (Claude Sonnet 5) scores a fixed sample so self-preference bias can be reported.
+- The judge model is configured separately from the generator. The default uses a pinned GPT-5.4 mini snapshot for generation, a pinned GPT-5.4 snapshot as primary judge, and GPT-5.4 mini as a secondary judge so judge sensitivity can be reported.
 - A human-labeled calibration set of about 100 answer-passage pairs, labeled once and committed, produces Cohen's kappa between judge and human labels. This number is published next to the judge scores; a judge whose agreement is not reported is not trusted.
 - Judge prompts are versioned files. Changing a judge prompt invalidates comparability, so runs record the judge prompt version and the gate refuses to compare runs across judge versions.
 
@@ -224,24 +224,22 @@ models:
   reranker:
     default: { provider: sentence_transformers, model: cross-encoder/ms-marco-MiniLM-L-6-v2 }
   generator:
-    default: { provider: anthropic, model: claude-opus-5, effort: medium, max_tokens: 1024 }
-    budget:  { provider: anthropic, model: claude-haiku-4-5, max_tokens: 1024 }
-    openai:  { provider: openai, model: ${OPENAI_MODEL} }
+    default: { provider: openai, model: gpt-5.4-mini-2026-03-17, effort: medium, max_tokens: 1024 }
+    budget:  { provider: openai, model: gpt-5.4-mini-2026-03-17, effort: low, max_tokens: 1024 }
   judge:
-    default:   { provider: anthropic, model: claude-opus-5, effort: high, max_tokens: 2048 }
-    secondary: { provider: anthropic, model: claude-sonnet-5, effort: high, max_tokens: 2048 }
+    default:   { provider: openai, model: gpt-5.4-2026-03-05, effort: high, max_tokens: 2048 }
+    secondary: { provider: openai, model: gpt-5.4-mini-2026-03-17, effort: medium, max_tokens: 2048 }
 pricing:
-  anthropic:
-    claude-opus-5:   { input_per_mtok: 5.00, output_per_mtok: 25.00 }
-    claude-sonnet-5: { input_per_mtok: 2.00, output_per_mtok: 10.00 }
-    claude-haiku-4-5: { input_per_mtok: 1.00, output_per_mtok: 5.00 }
+  openai:
+    gpt-5.4-2026-03-05:      { input_per_mtok: 2.50, cached_input_per_mtok: 0.25, output_per_mtok: 15.00 }
+    gpt-5.4-mini-2026-03-17: { input_per_mtok: 0.75, cached_input_per_mtok: 0.075, output_per_mtok: 4.50 }
 ```
 
 - Model identifiers, effort, temperature, token limits, timeouts, and retry policy are configuration, never constants in source.
-- Prompts live in `src/ragops/prompts/` as versioned files with a changelog; the rendered prompt hash is stored with every generation and judge record.
+- Prompts live in `prompts/` as versioned files; the rendered prompt hash is stored with every generation and judge record.
 - Every structured response is validated against its schema. One repair attempt is allowed; a second failure is recorded as a typed failure outcome.
 - Refusal stop reasons are handled explicitly and counted as an outcome category.
-- Adaptive thinking is left at the model default; effort is the cost lever, tuned per role and reported in the cost table.
+- Reasoning effort is the cost/latency lever, tuned per role and preserved in the configuration hash.
 
 ### Evaluation cost envelope
 
@@ -249,9 +247,8 @@ Approximate cost of one full scheduled evaluation with generation and judging on
 
 | Configuration | Generation | Judging | Total per full run |
 |---|---:|---:|---:|
-| Opus 5 generator, Opus 5 judge | ~$12 | ~$13 | ~$25 |
-| Sonnet 5 generator, Opus 5 judge | ~$5 | ~$13 | ~$18 |
-| Haiku 4.5 generator, Sonnet 5 judge | ~$2.50 | ~$5 | ~$8 |
+| GPT-5.4 mini generator, GPT-5.4 judge | ~$1.94 | ~$6.45 | ~$8.39 |
+| GPT-5.4 mini generator, primary + secondary judges | ~$1.94 | ~$8.39 | ~$10.32 |
 
 Prompt caching on the fixed prefix and the response cache on unchanged inputs reduce these further. Pull-request gates spend nothing on LLM calls.
 
@@ -358,7 +355,7 @@ Section 3.4 describes the offline suite. The scheduled run publishes its report 
 5. Implement retrieval stages behind protocols: sparse, dense, fusion, rerank; the pipeline executor with spans; `/v1/search`.
 6. Implement the evaluation library for retrieval: `pytrec_eval` metrics, per-query persistence, aggregation, bootstrap intervals, Markdown report, gate, and baseline files. Produce the first README results table.
 7. Add Docker Compose with Postgres, API, worker, OpenTelemetry Collector, Prometheus, Grafana with provisioned dashboards, Tempo, and Langfuse. Add the PR evaluation gate workflow.
-8. Implement generation: prompt versioning, Anthropic generator, structured-output validation, citation validation, response cache, prompt caching, outcome categories, `/v1/answer`, and Langfuse instrumentation.
+8. Implement generation: prompt versioning, OpenAI Responses adapter, structured-output validation, citation validation, response cache, prompt caching, outcome categories, `/v1/answer`, and Langfuse instrumentation.
 9. Implement answer evaluation: deterministic metrics, the SciFact verification task, the judge with structured output, the secondary judge, the calibration set and agreement report, and the scheduled full evaluation workflow.
 10. Implement the online sampler and quality dashboard panels.
 11. Write Terraform for VPC, ECR, ECS cluster and services, ALB, RDS, S3, Secrets Manager, IAM, CloudWatch dashboard and alarms; add the build, scan, and deploy workflow with OIDC and a manual approval environment.
@@ -473,7 +470,7 @@ Final README, ADRs, model and data cards, screenshots, tagged release, and an ad
 - Python 3.12 or later, FastAPI, Pydantic v2, and SQLAlchemy with Alembic for migrations.
 - Postgres with pgvector is the single durable store; sparse retrieval uses an in-process `bm25s` artifact. OpenSearch was rejected for v1 because `deep-research` already demonstrates it, a single store lowers cost, and benchmark corpora are immutable. The decision is recorded as an ADR with the conditions under which it would be revisited.
 - Embeddings and reranking use sentence-transformers models on CPU or Apple Metal; no GPU is assumed anywhere. Hosted embedding providers are optional configuration.
-- Anthropic is the default generation and judge provider through the official SDK; OpenAI is an optional second provider for comparison tables.
+- OpenAI is the default generation and judge provider through the official SDK. The provider-neutral protocols retain a clean seam for later comparison adapters without making them Phase 2 dependencies.
 - Langfuse is self-hosted in Docker Compose for local development. Running Langfuse's full stack on ECS is out of scope for v1; the AWS environment points at either the Langfuse Cloud free tier or a self-hosted instance through configuration. This is the one place where the deployed environment differs from local, and it is documented as a decision to confirm.
 - The job queue is Postgres-backed in both environments to avoid an SQS dependency and to demonstrate a different durable-work pattern from `deep-research`.
 - Amazon ECS on Fargate is the production compute target, chosen over Kubernetes to keep infrastructure effort and cost proportional to a portfolio project; the estimated always-on cost is about $100–130 per month, and the environment is designed to be destroyed and recreated with one command.
@@ -492,7 +489,8 @@ Final README, ADRs, model and data cards, screenshots, tagged release, and an ad
 - [Sentence-Transformers](https://www.sbert.net/)
 - [BAAI/bge-small-en-v1.5](https://huggingface.co/BAAI/bge-small-en-v1.5)
 - [cross-encoder/ms-marco-MiniLM-L-6-v2](https://huggingface.co/cross-encoder/ms-marco-MiniLM-L-6-v2)
-- [Anthropic Python SDK](https://github.com/anthropics/anthropic-sdk-python)
+- [OpenAI Responses API](https://developers.openai.com/api/reference/resources/responses/methods/create)
+- [OpenAI model documentation](https://developers.openai.com/api/docs/models)
 - [Langfuse self-hosting](https://langfuse.com/self-hosting)
 - [OpenTelemetry Python](https://opentelemetry.io/docs/languages/python/)
 - [AWS Distro for OpenTelemetry Collector](https://aws-otel.github.io/docs/getting-started/collector)

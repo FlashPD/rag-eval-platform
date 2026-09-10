@@ -4,7 +4,7 @@ from collections.abc import Sequence
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -127,15 +127,29 @@ class IngestionRepository:
                 "dataset_id": dataset_id,
                 "external_id": query.external_id,
                 "text": query.text,
+                "query_metadata": query.metadata,
             }
             for query in queries
         ]
-        return await _insert_missing(
+        inserted = await _insert_missing(
             self._session,
             QueryRow,
             values,
             index_elements=["dataset_id", "external_id"],
         )
+        # Older ingestions predate query metadata. Updating it separately keeps
+        # idempotent insert counts stable while backfilling SciFact gold labels.
+        for query in queries:
+            if query.metadata:
+                await self._session.execute(
+                    update(QueryRow)
+                    .where(
+                        QueryRow.dataset_id == dataset_id,
+                        QueryRow.external_id == query.external_id,
+                    )
+                    .values(query_metadata=query.metadata)
+                )
+        return inserted
 
     async def add_qrels(
         self,

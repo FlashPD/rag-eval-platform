@@ -33,6 +33,12 @@ def build_baseline(
         split=report.run.spec.split,
         sample_size=report.run.spec.sample_size,
         seed=report.run.spec.seed,
+        generation_sample_size=report.run.spec.generation_sample_size,
+        generation_variants=report.run.spec.generation_variants,
+        generator_profile=report.run.spec.generator_profile,
+        judge_profiles=report.run.spec.judge_profiles,
+        generation_prompt_version=report.run.spec.generation_prompt_version,
+        judge_prompt_version=report.run.spec.judge_prompt_version,
         run_id=report.run.id,
         git_commit=report.run.git_commit,
         recorded_at=datetime.now(UTC),
@@ -100,6 +106,27 @@ def _ensure_comparable(baseline: BaselineDocument, run_spec: EvalRunSpec) -> Non
             f"baseline={baseline.seed}, run={run_spec.seed}; "
             "a different seed samples a different set of queries"
         )
+    for label, baseline_value, run_value in (
+        (
+            "generation sample size",
+            baseline.generation_sample_size,
+            run_spec.generation_sample_size,
+        ),
+        ("generation variants", baseline.generation_variants, run_spec.generation_variants),
+        ("generator profile", baseline.generator_profile, run_spec.generator_profile),
+        ("judge profiles", baseline.judge_profiles, run_spec.judge_profiles),
+        (
+            "generation prompt version",
+            baseline.generation_prompt_version,
+            run_spec.generation_prompt_version,
+        ),
+        ("judge prompt version", baseline.judge_prompt_version, run_spec.judge_prompt_version),
+    ):
+        if baseline_value != run_value:
+            raise ValueError(
+                f"baseline {label} does not match the run: "
+                f"baseline={baseline_value!r}, run={run_value!r}"
+            )
 
 
 def _ensure_index_fingerprints_match(baseline: BaselineDocument, report: EvaluationReport) -> None:

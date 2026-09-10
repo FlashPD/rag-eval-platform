@@ -9,6 +9,7 @@ from pydantic import Field, JsonValue, PositiveInt
 from ragops.contracts.base import Contract
 
 EVALUATION_JOB_KIND = "evaluation.retrieval"
+ONLINE_JUDGE_JOB_KIND = "evaluation.online_judge"
 
 
 class JobStatus(StrEnum):

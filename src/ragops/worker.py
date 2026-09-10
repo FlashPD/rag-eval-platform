@@ -12,8 +12,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ragops.config import DatasetCatalog, VariantRegistry
 from ragops.contracts import Job
+from ragops.evaluation.judging import VersionedJudgePromptRenderer
 from ragops.evaluation.runner import RetrievalEvaluationRunner
+from ragops.generation.service import AnswerService
 from ragops.persistence.job_queue import SqlAlchemyJobQueue
+from ragops.protocols import Judge
 from ragops.retrieval.pipeline import SearchExecutor
 
 LOGGER = logging.getLogger(__name__)
@@ -46,6 +49,9 @@ def build_evaluation_job_handler(
     search: SearchExecutor,
     datasets: DatasetCatalog,
     variants: VariantRegistry,
+    answer_service: AnswerService | None = None,
+    judge_renderer: VersionedJudgePromptRenderer | None = None,
+    judges: Mapping[str, Judge] | None = None,
 ) -> JobHandler:
     """Build the handler that executes one queued retrieval evaluation run.
 
@@ -66,6 +72,9 @@ def build_evaluation_job_handler(
             search=search,
             datasets=datasets,
             variants=variants,
+            answer_service=answer_service,
+            judge_renderer=judge_renderer,
+            judges=judges,
         ).run(run_id)
 
     return handle

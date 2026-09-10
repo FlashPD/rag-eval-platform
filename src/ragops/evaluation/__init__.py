@@ -1,5 +1,11 @@
 """Evaluation metrics, execution, reporting, and regression gates."""
 
+from ragops.evaluation.calibration import (
+    compute_calibration_agreement,
+    load_calibration_labels,
+    render_calibration_markdown,
+    run_calibration,
+)
 from ragops.evaluation.gate import (
     build_baseline,
     evaluate_gate,
@@ -35,15 +41,19 @@ __all__ = [
     "build_evaluation_report",
     "build_run_baseline",
     "build_variant_comparisons",
+    "compute_calibration_agreement",
     "compute_retrieval_metrics",
     "create_retrieval_evaluation",
     "evaluate_gate",
     "gate_evaluation_run",
     "get_evaluation_report",
     "get_evaluation_run",
+    "load_calibration_labels",
     "read_baseline",
+    "render_calibration_markdown",
     "render_gate_report",
     "render_markdown_report",
+    "run_calibration",
     "run_retrieval_evaluation",
     "select_evaluation_queries",
     "submit_retrieval_evaluation",

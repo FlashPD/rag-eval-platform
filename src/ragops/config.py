@@ -1,11 +1,13 @@
 """Validated application and experiment configuration."""
 
+import hashlib
+import json
 from decimal import Decimal
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
 import yaml
-from pydantic import Field, PositiveFloat, PositiveInt, model_validator
+from pydantic import Field, PositiveFloat, PositiveInt, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from ragops.contracts.base import Contract
@@ -25,12 +27,17 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+asyncpg://ragops:ragops@localhost:5432/ragops"
     configuration_directory: Path = Path("config")
     artifact_directory: Path = Path("artifacts")
+    prompt_directory: Path = Path("prompts")
     model_cache_directory: Path = Path("artifacts/models")
     model_device: str | None = None
     worker_poll_interval_seconds: PositiveFloat = 1.0
     worker_lease_seconds: PositiveInt = 300
     otlp_endpoint: str | None = None
     telemetry_service_name: str = "ragops"
+    openai_api_key: SecretStr | None = None
+    generation_timeout_seconds: PositiveFloat = 30.0
+    answer_context_count: PositiveInt = 10
+    online_evaluation_sample_rate: float = Field(default=0.05, ge=0, le=1)
 
 
 class EmbeddingProfile(Contract):
@@ -46,11 +53,20 @@ class RerankerProfile(Contract):
 
 
 class LLMProfile(Contract):
-    provider: Literal["anthropic", "openai"]
+    provider: Literal["openai"]
     model: str = Field(min_length=1)
     effort: Literal["low", "medium", "high"] | None = None
-    temperature: float = Field(default=0, ge=0, le=2)
+    temperature: float | None = Field(default=None, ge=0, le=2)
     max_tokens: int = Field(gt=0)
+
+    @property
+    def configuration_hash(self) -> str:
+        canonical = json.dumps(
+            self.model_dump(mode="json"),
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(canonical.encode()).hexdigest()
 
 
 class ModelCatalog(Contract):
@@ -64,6 +80,7 @@ class ModelPricing(Contract):
     input_per_million_tokens: Decimal = Field(ge=0)
     output_per_million_tokens: Decimal = Field(ge=0)
     cached_input_per_million_tokens: Decimal | None = Field(default=None, ge=0)
+    cache_write_input_per_million_tokens: Decimal | None = Field(default=None, ge=0)
 
 
 class PricingTable(Contract):
@@ -77,11 +94,12 @@ class PricingTable(Contract):
         input_tokens: int,
         output_tokens: int,
         cached_input_tokens: int = 0,
+        cache_write_input_tokens: int = 0,
     ) -> Decimal:
-        if min(input_tokens, output_tokens, cached_input_tokens) < 0:
+        if min(input_tokens, output_tokens, cached_input_tokens, cache_write_input_tokens) < 0:
             raise ValueError("token counts cannot be negative")
-        if cached_input_tokens > input_tokens:
-            raise ValueError("cached input tokens cannot exceed total input tokens")
+        if cached_input_tokens + cache_write_input_tokens > input_tokens:
+            raise ValueError("cached and cache-write tokens cannot exceed total input tokens")
 
         try:
             pricing = self.providers[provider][model]
@@ -94,10 +112,16 @@ class PricingTable(Contract):
             if pricing.cached_input_per_million_tokens is not None
             else pricing.input_per_million_tokens
         )
-        uncached_input = input_tokens - cached_input_tokens
+        cache_write_rate = (
+            pricing.cache_write_input_per_million_tokens
+            if pricing.cache_write_input_per_million_tokens is not None
+            else pricing.input_per_million_tokens
+        )
+        uncached_input = input_tokens - cached_input_tokens - cache_write_input_tokens
         return (
             Decimal(uncached_input) * pricing.input_per_million_tokens
             + Decimal(cached_input_tokens) * cached_rate
+            + Decimal(cache_write_input_tokens) * cache_write_rate
             + Decimal(output_tokens) * pricing.output_per_million_tokens
         ) / million
 

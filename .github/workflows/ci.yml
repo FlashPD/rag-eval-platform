@@ -1,9 +1,10 @@
 name: CI
 
 on:
+  workflow_dispatch:
   pull_request:
   push:
-    branches: [main]
+    branches: [dev, main]
 
 permissions:
   contents: read
@@ -25,7 +26,7 @@ jobs:
       - name: Run checks
         run: make check PYTHON=python
 
-  evaluation-gate:
+  fixture-evaluation-gate:
     needs: test
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -71,3 +72,105 @@ jobs:
           ragops eval run --dataset fixture --variants bm25 --seed 42 > smoke-run.json
           RUN_ID=$(python -c 'import json; print(json.load(open("smoke-run.json"))["id"])')
           ragops eval gate "$RUN_ID" --baseline evals/baselines/fixture.json
+
+  cross-domain-evaluation-gate:
+    needs: test
+    runs-on: ubuntu-latest
+    # A warm run restores embeddings in seconds. The larger timeout is for the
+    # intentional FiQA cold-cache path on a shared CPU runner.
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        dataset: [scifact, nfcorpus, fiqa]
+    services:
+      postgres:
+        image: pgvector/pgvector:0.8.1-pg16
+        env:
+          POSTGRES_DB: ragops
+          POSTGRES_USER: ragops
+          POSTGRES_PASSWORD: ragops
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ragops -d ragops"
+          --health-interval 3s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      RAGOPS_ENVIRONMENT: test
+      RAGOPS_DATABASE_URL: postgresql+asyncpg://ragops:ragops@localhost:5432/ragops
+      RAGOPS_POSTGRES_URL: postgresql://ragops:ragops@localhost:5432/ragops
+      RAGOPS_MODEL_DEVICE: cpu
+      RETRIEVAL_VARIANTS: bm25,dense_bge_small,hybrid_rrf,hybrid_rrf_rerank
+      SAMPLE_SIZE: 50
+      SAMPLE_SEED: 42
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Restore model weights
+        uses: actions/cache@v4
+        with:
+          path: artifacts/models
+          key: >-
+            ${{ runner.os }}-${{ runner.arch }}-ragops-models-v1-${{
+            hashFiles('config/models.yaml', 'requirements-dev.lock') }}
+      - name: Restore ${{ matrix.dataset }} retrieval index
+        id: retrieval-index-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            artifacts/bm25
+            artifacts/datasets
+            artifacts/ci-index/${{ matrix.dataset }}.dump
+          key: >-
+            ${{ runner.os }}-${{ runner.arch }}-ragops-${{ matrix.dataset }}-index-v1-${{
+            hashFiles('config/datasets.yaml', 'config/models.yaml', 'pyproject.toml',
+            'requirements-dev.lock', 'alembic.ini', 'migrations/**',
+            'src/ragops/ingestion/**', 'src/ragops/persistence/**') }}
+      - name: Install project
+        run: |
+          python -m pip install -r requirements-dev.lock
+          python -m pip install --no-deps -e .
+      - name: Restore or build ${{ matrix.dataset }} retrieval index
+        run: >-
+          bash scripts/ci/prepare_retrieval_index.sh
+          "${{ matrix.dataset }}"
+          "artifacts/ci-index/${{ matrix.dataset }}.dump"
+      - name: Save ${{ matrix.dataset }} retrieval index
+        if: steps.retrieval-index-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            artifacts/bm25
+            artifacts/datasets
+            artifacts/ci-index/${{ matrix.dataset }}.dump
+          key: ${{ steps.retrieval-index-cache.outputs.cache-primary-key }}
+      - name: Run ${{ matrix.dataset }} retrieval regression gate
+        run: |
+          mkdir -p "artifacts/ci-results/${{ matrix.dataset }}"
+          ragops eval run \
+            --dataset "${{ matrix.dataset }}" \
+            --variants "${RETRIEVAL_VARIANTS}" \
+            --sample-size "${SAMPLE_SIZE}" \
+            --seed "${SAMPLE_SEED}" \
+            --device cpu \
+            | tee "artifacts/ci-results/${{ matrix.dataset }}/run.json"
+          RUN_ID=$(python -c 'import json, os; path = "artifacts/ci-results/" + os.environ["MATRIX_DATASET"] + "/run.json"; print(json.load(open(path))["id"])')
+          ragops eval report "${RUN_ID}" \
+            --output-dir "artifacts/ci-results/${{ matrix.dataset }}"
+          ragops eval gate "${RUN_ID}" \
+            --baseline "evals/baselines/${{ matrix.dataset }}.json" \
+            2>&1 | tee "artifacts/ci-results/${{ matrix.dataset }}/gate.md"
+        env:
+          MATRIX_DATASET: ${{ matrix.dataset }}
+      - name: Upload ${{ matrix.dataset }} evaluation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.dataset }}-retrieval-gate
+          path: artifacts/ci-results/${{ matrix.dataset }}
+          if-no-files-found: warn

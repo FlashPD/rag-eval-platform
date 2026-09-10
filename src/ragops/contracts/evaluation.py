@@ -1,5 +1,9 @@
 """Evaluation run, metric, gate, and judge contracts."""
 
+from __future__ import annotations
+
+import hashlib
+import json
 from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
@@ -9,7 +13,7 @@ from uuid import UUID
 from pydantic import Field, model_validator
 
 from ragops.contracts.base import Contract
-from ragops.contracts.generation import AnswerResponse
+from ragops.contracts.generation import AnswerResponse, Passage, TokenUsage
 from ragops.contracts.retrieval import StageTiming
 
 
@@ -59,6 +63,8 @@ class EvalRunSpec(Contract):
     split: str = Field(default="test", min_length=1)
     variants: tuple[str, ...] = Field(min_length=1)
     sample_size: int | None = Field(default=None, gt=0)
+    generation_sample_size: int | None = Field(default=None, gt=0)
+    generation_variants: tuple[str, ...] = ()
     seed: int = 42
     generation_enabled: bool = False
     generator_profile: str | None = None
@@ -67,11 +73,31 @@ class EvalRunSpec(Contract):
     judge_prompt_version: str | None = None
 
     @model_validator(mode="after")
-    def validate_generation_settings(self) -> "EvalRunSpec":
+    def validate_generation_settings(self) -> EvalRunSpec:
         if len(set(self.variants)) != len(self.variants):
             raise ValueError("eval variants must be unique")
-        if self.generation_enabled and self.generator_profile is None:
-            raise ValueError("generator_profile is required when generation is enabled")
+        if self.generation_enabled and (
+            self.generator_profile is None or self.generation_prompt_version is None
+        ):
+            raise ValueError(
+                "generator_profile and generation_prompt_version are required "
+                "when generation is enabled"
+            )
+        if len(set(self.generation_variants)) != len(self.generation_variants):
+            raise ValueError("generation_variants must be unique")
+        if self.generation_variants and not set(self.generation_variants).issubset(self.variants):
+            raise ValueError("generation_variants must be a subset of variants")
+        if not self.generation_enabled and (
+            self.generation_sample_size is not None
+            or self.generation_variants
+            or self.generator_profile is not None
+            or self.judge_profiles
+            or self.generation_prompt_version is not None
+            or self.judge_prompt_version is not None
+        ):
+            raise ValueError("generation settings require generation_enabled")
+        if self.judge_profiles and self.judge_prompt_version is None:
+            raise ValueError("judge_prompt_version is required when judges are enabled")
         return self
 
 
@@ -99,6 +125,7 @@ class EvaluationQuery(Contract):
     external_id: str = Field(min_length=1)
     text: str = Field(min_length=1)
     qrels: dict[str, int]
+    metadata: dict[str, object] = Field(default_factory=dict)
 
 
 class QueryResult(Contract):
@@ -110,6 +137,8 @@ class QueryResult(Contract):
     answer: AnswerResponse | None = None
     deterministic_scores: dict[str, float] = Field(default_factory=dict)
     judge_scores: dict[str, float] = Field(default_factory=dict)
+    judge_records: dict[str, JudgeVerdict] = Field(default_factory=dict)
+    scifact_gold_label: str | None = None
     token_cost_usd: Decimal = Field(default=Decimal("0"), ge=0)
 
 
@@ -174,6 +203,12 @@ class BaselineDocument(Contract):
     split: str = Field(min_length=1)
     sample_size: int | None = Field(default=None, gt=0)
     seed: int
+    generation_sample_size: int | None = Field(default=None, gt=0)
+    generation_variants: tuple[str, ...] = ()
+    generator_profile: str | None = None
+    judge_profiles: tuple[str, ...] = ()
+    generation_prompt_version: str | None = None
+    judge_prompt_version: str | None = None
     run_id: UUID
     git_commit: str | None = None
     recorded_at: datetime
@@ -182,7 +217,7 @@ class BaselineDocument(Contract):
     metrics: dict[str, dict[str, float]] = Field(min_length=1)
 
     @model_validator(mode="after")
-    def validate_metrics(self) -> "BaselineDocument":
+    def validate_metrics(self) -> BaselineDocument:
         for variant, scores in self.metrics.items():
             if not variant:
                 raise ValueError("baseline variant names cannot be empty")
@@ -243,5 +278,75 @@ class JudgeVerdict(Contract):
     faithfulness: float = Field(ge=0, le=1)
     relevance: float = Field(ge=0, le=1)
     rationale: str
+    provider: str = Field(min_length=1)
     judge_model: str
+    judge_configuration_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
     judge_prompt_version: str
+    rendered_prompt_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    usage: TokenUsage
+    provider_request_id: str | None = Field(default=None, min_length=1)
+    cache_hit: bool = False
+
+
+class JudgeOutput(Contract):
+    """Provider-normalized rubric output before provenance is attached."""
+
+    claims: tuple[JudgeClaimVerdict, ...]
+    faithfulness: float = Field(ge=0, le=1)
+    relevance: float = Field(ge=0, le=1)
+    rationale: str = Field(min_length=1)
+
+
+class JudgeRequest(Contract):
+    query: str = Field(min_length=1, max_length=4_096)
+    answer: str
+    abstained: bool
+    citations: tuple[str, ...]
+    contexts: tuple[Passage, ...]
+    system_prompt: str = Field(min_length=1)
+    user_prompt: str = Field(min_length=1)
+    prompt_version: str = Field(pattern=r"^[a-z0-9][a-z0-9._-]*$")
+    trace_id: str = Field(min_length=1)
+
+    @property
+    def rendered_prompt_hash(self) -> str:
+        canonical = json.dumps(
+            {
+                "prompt_version": self.prompt_version,
+                "system_prompt": self.system_prompt,
+                "user_prompt": self.user_prompt,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+class AnswerMetricScores(Contract):
+    citation_validity: float = Field(ge=0, le=1)
+    context_precision: float = Field(ge=0, le=1)
+    abstention_correctness: float = Field(ge=0, le=1)
+
+    def as_score_dict(self) -> dict[str, float]:
+        return self.model_dump()
+
+
+class CalibrationLabel(Contract):
+    id: str = Field(min_length=1)
+    query: str = Field(min_length=1)
+    answer: str
+    abstained: bool = False
+    citations: tuple[str, ...] = ()
+    contexts: tuple[Passage, ...]
+    human_faithful: bool
+    human_relevant: bool
+    annotator: str = Field(min_length=1)
+
+
+class CalibrationAgreement(Contract):
+    judge_profile: str = Field(min_length=1)
+    judge_model: str = Field(min_length=1)
+    judge_prompt_version: str = Field(min_length=1)
+    sample_count: int = Field(gt=0)
+    faithfulness_kappa: float = Field(ge=-1, le=1)
+    relevance_kappa: float = Field(ge=-1, le=1)

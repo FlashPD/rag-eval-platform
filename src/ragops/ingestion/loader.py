@@ -26,6 +26,13 @@ def _read_json_lines(path: Path) -> list[dict[str, Any]]:
     return records
 
 
+def _query_metadata(record: dict[str, Any]) -> dict[str, object]:
+    value = record.get("metadata")
+    if not isinstance(value, dict):
+        return {}
+    return {str(key): item for key, item in value.items()}
+
+
 def load_beir_dataset(directory: Path, *, split: str) -> LoadedDataset:
     """Load a BEIR corpus and retain only queries represented in the selected qrels."""
     qrels_path = directory / "qrels" / f"{split}.tsv"
@@ -57,7 +64,11 @@ def load_beir_dataset(directory: Path, *, split: str) -> LoadedDataset:
         for record in _read_json_lines(directory / "corpus.jsonl")
     )
     queries = tuple(
-        SourceQuery(external_id=str(record["_id"]), text=str(record["text"]))
+        SourceQuery(
+            external_id=str(record["_id"]),
+            text=str(record["text"]),
+            metadata=_query_metadata(record),
+        )
         for record in _read_json_lines(directory / "queries.jsonl")
         if str(record["_id"]) in selected_query_ids
     )

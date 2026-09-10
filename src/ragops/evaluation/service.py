@@ -1,5 +1,6 @@
 """Application service for creating, executing, and gating evaluation runs."""
 
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Protocol
 from uuid import UUID
@@ -18,11 +19,14 @@ from ragops.contracts import (
     JobSpec,
 )
 from ragops.evaluation.gate import build_baseline, evaluate_gate, read_baseline
+from ragops.evaluation.judging import VersionedJudgePromptRenderer
 from ragops.evaluation.reporting import build_evaluation_report
 from ragops.evaluation.repository import SqlAlchemyEvaluationDataRepository
 from ragops.evaluation.runner import RetrievalEvaluationRunner
+from ragops.generation.service import AnswerService
 from ragops.persistence.job_queue import SqlAlchemyJobQueue
 from ragops.persistence.repositories import SqlAlchemyEvaluationRunRepository
+from ragops.protocols import Judge
 from ragops.retrieval.pipeline import SearchExecutor
 
 
@@ -30,8 +34,6 @@ def _resolve_variant_hashes(
     spec: EvalRunSpec, datasets: DatasetCatalog, variants: VariantRegistry
 ) -> dict[str, str]:
     """Validate a spec against the configured catalogs and pin its variant hashes."""
-    if spec.generation_enabled:
-        raise ValueError("retrieval evaluation cannot enable generation")
     manifest = datasets.get(spec.dataset)
     if spec.split != manifest.default_split:
         raise ValueError(f"dataset {spec.dataset!r} does not serve split {spec.split!r}")
@@ -109,8 +111,11 @@ async def run_retrieval_evaluation(
     spec: EvalRunSpec,
     git_commit: str | None = None,
     image_digest: str | None = None,
+    answer_service: AnswerService | None = None,
+    judge_renderer: VersionedJudgePromptRenderer | None = None,
+    judges: Mapping[str, Judge] | None = None,
 ) -> EvalRun:
-    """Create, queue, and execute one retrieval-only evaluation run in this process."""
+    """Create, queue, and execute one resumable evaluation run in this process."""
     run = await create_retrieval_evaluation(
         sessions,
         datasets=datasets,
@@ -124,6 +129,9 @@ async def run_retrieval_evaluation(
         search=search,
         datasets=datasets,
         variants=variants,
+        answer_service=answer_service,
+        judge_renderer=judge_renderer,
+        judges=judges,
     ).run(run.id)
 
 

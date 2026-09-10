@@ -1,0 +1,142 @@
+name: Scheduled answer evaluation
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 6 * * 0"
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  full-evaluation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - dataset: scifact
+            answer_variant: dense_bge_small
+          - dataset: nfcorpus
+            answer_variant: hybrid_rrf_rerank
+          - dataset: fiqa
+            answer_variant: dense_bge_small
+    services:
+      postgres:
+        image: pgvector/pgvector:0.8.1-pg16
+        env:
+          POSTGRES_DB: ragops
+          POSTGRES_USER: ragops
+          POSTGRES_PASSWORD: ragops
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ragops -d ragops"
+          --health-interval 3s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      RAGOPS_DATABASE_URL: postgresql+asyncpg://ragops:ragops@localhost:5432/ragops
+      RAGOPS_POSTGRES_URL: postgresql://ragops:ragops@localhost:5432/ragops
+      RAGOPS_MODEL_DEVICE: cpu
+      RAGOPS_OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      RETRIEVAL_VARIANTS: bm25,dense_bge_small,hybrid_rrf,hybrid_rrf_rerank
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Require the provider secret
+        run: test -n "${RAGOPS_OPENAI_API_KEY}"
+      - name: Restore model weights
+        uses: actions/cache@v4
+        with:
+          path: artifacts/models
+          key: >-
+            ${{ runner.os }}-${{ runner.arch }}-ragops-models-v1-${{
+            hashFiles('config/models.yaml', 'requirements-dev.lock') }}
+      - name: Restore ${{ matrix.dataset }} retrieval index
+        id: retrieval-index-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            artifacts/bm25
+            artifacts/datasets
+            artifacts/ci-index/${{ matrix.dataset }}.dump
+          key: >-
+            ${{ runner.os }}-${{ runner.arch }}-ragops-${{ matrix.dataset }}-index-v1-${{
+            hashFiles('config/datasets.yaml', 'config/models.yaml', 'requirements-dev.lock',
+            'migrations/**', 'src/ragops/ingestion/**', 'src/ragops/persistence/**') }}
+      - name: Install project
+        run: |
+          python -m pip install -r requirements-dev.lock
+          python -m pip install --no-deps -e .
+      - name: Restore or build retrieval index
+        run: >-
+          bash scripts/ci/prepare_retrieval_index.sh
+          "${{ matrix.dataset }}"
+          "artifacts/ci-index/${{ matrix.dataset }}.dump"
+      - name: Save retrieval index
+        if: steps.retrieval-index-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            artifacts/bm25
+            artifacts/datasets
+            artifacts/ci-index/${{ matrix.dataset }}.dump
+          key: ${{ steps.retrieval-index-cache.outputs.cache-primary-key }}
+      - name: Run 200-query answer evaluation
+        run: |
+          mkdir -p "artifacts/scheduled/${{ matrix.dataset }}"
+          ragops eval run \
+            --dataset "${{ matrix.dataset }}" \
+            --variants "${RETRIEVAL_VARIANTS}" \
+            --generation \
+            --generation-sample-size 200 \
+            --generation-variants "${{ matrix.answer_variant }}" \
+            --generator-profile default \
+            --judge-profiles default,secondary \
+            --seed 42 \
+            --device cpu \
+            | tee "artifacts/scheduled/${{ matrix.dataset }}/run.json"
+          RUN_ID=$(python -c 'import json, os; path = "artifacts/scheduled/" + os.environ["MATRIX_DATASET"] + "/run.json"; print(json.load(open(path))["id"])')
+          echo "${RUN_ID}" > "artifacts/scheduled/${{ matrix.dataset }}/run-id.txt"
+          ragops eval report "${RUN_ID}" \
+            --output-dir "artifacts/scheduled/${{ matrix.dataset }}"
+        env:
+          MATRIX_DATASET: ${{ matrix.dataset }}
+      - name: Gate against published answer baseline
+        id: answer-gate
+        continue-on-error: true
+        run: |
+          BASELINE="evals/baselines/answers/${{ matrix.dataset }}.json"
+          if [[ ! -f "${BASELINE}" ]]; then
+            echo "No answer baseline is published yet: ${BASELINE}" \
+              | tee "artifacts/scheduled/${{ matrix.dataset }}/gate.md"
+            exit 0
+          fi
+          RUN_ID=$(cat "artifacts/scheduled/${{ matrix.dataset }}/run-id.txt")
+          ragops eval gate "${RUN_ID}" --baseline "${BASELINE}" \
+            2>&1 | tee "artifacts/scheduled/${{ matrix.dataset }}/gate.md"
+      - name: Open an issue for an answer-quality regression
+        if: steps.answer-gate.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TITLE="Scheduled answer regression: ${{ matrix.dataset }}"
+          EXISTING=$(gh issue list --state open --search "${TITLE} in:title" --json number --jq length)
+          if [[ "${EXISTING}" == "0" ]]; then
+            gh issue create \
+              --title "${TITLE}" \
+              --body-file "artifacts/scheduled/${{ matrix.dataset }}/gate.md"
+          fi
+      - name: Upload evaluation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.dataset }}-scheduled-answer-evaluation
+          path: artifacts/scheduled/${{ matrix.dataset }}
+          if-no-files-found: warn

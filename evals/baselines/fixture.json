@@ -1,9 +1,15 @@
 {
   "dataset": "fixture",
-  "git_commit": "1421ab7ebedb7f1a0b53fa59f615d3b2531245ee",
+  "generation_prompt_version": null,
+  "generation_sample_size": null,
+  "generation_variants": [],
+  "generator_profile": null,
+  "git_commit": "48b212a70b0a2b37cd43d7e7a45ff58321fe44e4",
   "index_fingerprints": {
-    "bm25": "92226f4611a74d168daf0cba26db455fe1ce3584068a48efa3778a9b3c6449e8"
+    "bm25": "381696cf02edaa678d3ec0b878d677c0bda575669ed9372ab043530019bea2c7"
   },
+  "judge_profiles": [],
+  "judge_prompt_version": null,
   "metrics": {
     "bm25": {
       "mrr_at_10": 1.0,
@@ -12,8 +18,8 @@
       "recall_at_100": 1.0
     }
   },
-  "recorded_at": "2026-09-08T01:00:33.383568Z",
-  "run_id": "676d0c87-6de5-45f2-bfe7-76ea37724135",
+  "recorded_at": "2026-09-10T01:14:09.249663Z",
+  "run_id": "302c29f3-52c8-4856-832f-5a0310400407",
   "sample_size": null,
   "seed": 42,
   "split": "test",
