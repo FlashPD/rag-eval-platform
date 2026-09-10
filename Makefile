@@ -1,4 +1,4 @@
-.PHONY: install format lint typecheck test check run eval-run db-upgrade db-downgrade stack-up stack-up-full stack-down stack-logs
+.PHONY: install format lint typecheck test check run eval-run db-upgrade db-downgrade stack-up stack-up-full stack-down stack-logs infra-fmt infra-validate
 
 PYTHON := .venv/bin/python
 RAGOPS := .venv/bin/ragops
@@ -50,3 +50,12 @@ stack-down:
 
 stack-logs:
 	docker compose logs --follow api worker otel-collector
+
+infra-fmt:
+	terraform fmt -recursive infra
+
+infra-validate:
+	terraform -chdir=infra/bootstrap init -backend=false
+	terraform -chdir=infra/bootstrap validate
+	terraform -chdir=infra/aws init -backend=false
+	terraform -chdir=infra/aws validate

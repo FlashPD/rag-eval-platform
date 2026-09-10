@@ -1,0 +1,11 @@
+aws_region  = "us-east-1"
+environment = "production"
+
+# "none" is cheapest and assigns public IPs to ECS tasks while keeping RDS private.
+# Use "single" for private tasks with one NAT gateway or "per_az" for resilient egress.
+nat_gateway_mode = "none"
+
+database_instance_class      = "db.t4g.micro"
+database_multi_az            = false
+database_deletion_protection = false
+database_skip_final_snapshot = true

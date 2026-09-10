@@ -199,6 +199,13 @@ exactly; it just should not be quoted as a headline result.
   snapshots, runs full retrieval plus a 200-query answer/judge sample on each dataset's strongest
   retrieval variant, uploads reproducible JSON and Markdown reports, gates against a published
   answer baseline when present, and opens a deduplicated issue on regression.
+- The first Phase 3 AWS foundation: separate Terraform bootstrap and application-state roots,
+  repository-scoped GitHub OIDC plan/apply roles, native S3 state locking, a two-AZ VPC with an
+  explicit NAT-cost mode, private RDS PostgreSQL with RDS-managed credentials, versioned encrypted
+  artifact storage, immutable ECR images, scoped ECS runtime roles, and CloudWatch log groups.
+  Infrastructure changes validate without credentials on every pull request, plan after merge to
+  protected `dev`, and apply only through the protected `production` GitHub environment. See
+  [`docs/aws_deployment.md`](docs/aws_deployment.md).
 
 All three real corpora are fully ingested in live PostgreSQL with ready indexes: SciFact has 5,183
 documents and 300 test queries, NFCorpus has 3,633 and 323, and FiQA has 57,638 and 648. Every
@@ -488,11 +495,17 @@ reference hardware. A complete answer trace should also be confirmed in the opti
 profile; OpenTelemetry spans and model/cost attributes are emitted, but that UI check requires a
 configured Langfuse project.
 
-The remaining product phases are AWS deployment (Terraform, OIDC, ECR/ECS/RDS/S3, scanning,
-CloudWatch, and deployed evaluation) and final portfolio packaging (ADRs, model card, screenshots,
-release tag, and the external `deep-research` scoring adapter). The real-dataset CI matrix is slow
-the first time a content-derived cache key is built—especially for FiQA—but subsequent runs restore
-the durable index snapshots.
+Phase 3's AWS foundation is implemented, including remote state, OIDC, networking, ECR, private
+RDS, S3, Secrets Manager references, IAM, and log retention. The next deployment slice is ECS: API,
+worker, migration and CLI task definitions, ALB routing, ADOT sidecars, CloudWatch dashboards and
+alarms, image build/Trivy scanning, deployment rollout, and a deployed evaluation run. Before those
+tasks can be stateless, the application also needs an explicit S3 artifact hydration/publication
+contract and environment-composed RDS credentials.
+
+Final portfolio packaging remains after deployment: ADRs, model card, screenshots, release tag,
+and the external `deep-research` scoring adapter. The real-dataset CI matrix is slow the first time
+a content-derived cache key is built—especially for FiQA—but subsequent runs restore the durable
+index snapshots.
 
 ## Design
 
