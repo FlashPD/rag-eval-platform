@@ -1,0 +1,128 @@
+name: AWS infrastructure
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/infrastructure.yml"
+      - "infra/**"
+  push:
+    branches: [dev]
+    paths:
+      - ".github/workflows/infrastructure.yml"
+      - "infra/**"
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: "Plan or apply the production infrastructure"
+        required: true
+        default: plan
+        type: choice
+        options:
+          - plan
+          - apply
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  AWS_REGION: us-east-1
+  TERRAFORM_VERSION: 1.14.6
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+      - name: Check formatting
+        run: terraform fmt -check -recursive infra
+      - name: Validate bootstrap stack
+        working-directory: infra/bootstrap
+        run: |
+          terraform init -backend=false
+          terraform validate
+      - name: Validate application stack
+        working-directory: infra/aws
+        run: |
+          terraform init -backend=false
+          terraform validate
+      - name: Scan infrastructure configuration
+        uses: aquasecurity/trivy-action@0.36.0
+        with:
+          scan-type: config
+          scan-ref: infra
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          hide-progress: true
+
+  dev-plan:
+    if: >-
+      github.event_name == 'push' &&
+      vars.AWS_TERRAFORM_PLAN_ROLE_ARN != '' &&
+      vars.AWS_TERRAFORM_STATE_BUCKET != '' &&
+      vars.AWS_TERRAFORM_STATE_KEY != ''
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+      - uses: aws-actions/configure-aws-credentials@v6.2.3
+        with:
+          role-to-assume: ${{ vars.AWS_TERRAFORM_PLAN_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Initialize remote state
+        working-directory: infra/aws
+        run: >-
+          terraform init
+          -backend-config="bucket=${{ vars.AWS_TERRAFORM_STATE_BUCKET }}"
+          -backend-config="key=${{ vars.AWS_TERRAFORM_STATE_KEY }}"
+          -backend-config="region=${AWS_REGION}"
+      - name: Plan
+        working-directory: infra/aws
+        run: terraform plan -no-color
+
+  protected-plan-or-apply:
+    if: github.event_name == 'workflow_dispatch'
+    needs: validate
+    runs-on: ubuntu-latest
+    environment: production
+    concurrency:
+      group: ragops-production-infrastructure
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+      - name: Require deployment configuration
+        env:
+          APPLY_ROLE_ARN: ${{ vars.AWS_TERRAFORM_APPLY_ROLE_ARN }}
+          STATE_BUCKET: ${{ vars.AWS_TERRAFORM_STATE_BUCKET }}
+          STATE_KEY: ${{ vars.AWS_TERRAFORM_STATE_KEY }}
+        run: test -n "${APPLY_ROLE_ARN}" && test -n "${STATE_BUCKET}" && test -n "${STATE_KEY}"
+      - uses: aws-actions/configure-aws-credentials@v6.2.3
+        with:
+          role-to-assume: ${{ vars.AWS_TERRAFORM_APPLY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Initialize remote state
+        working-directory: infra/aws
+        run: >-
+          terraform init
+          -backend-config="bucket=${{ vars.AWS_TERRAFORM_STATE_BUCKET }}"
+          -backend-config="key=${{ vars.AWS_TERRAFORM_STATE_KEY }}"
+          -backend-config="region=${AWS_REGION}"
+      - name: Plan
+        if: inputs.operation == 'plan'
+        working-directory: infra/aws
+        run: terraform plan -no-color
+      - name: Apply
+        if: inputs.operation == 'apply'
+        working-directory: infra/aws
+        run: terraform apply -auto-approve
