@@ -99,3 +99,100 @@ variable "log_retention_days" {
   type        = number
   default     = 30
 }
+
+variable "application_image_digest" {
+  description = "Immutable sha256 digest deployed from the application ECR repository; null keeps services scaled to zero during initial provisioning."
+  type        = string
+  default     = null
+  nullable    = true
+
+  validation {
+    condition = (
+      var.application_image_digest == null ||
+      can(regex("^sha256:[a-f0-9]{64}$", var.application_image_digest))
+    )
+    error_message = "application_image_digest must be null or a sha256 digest."
+  }
+}
+
+variable "cpu_architecture" {
+  description = "CPU architecture for application task definitions."
+  type        = string
+  default     = "X86_64"
+
+  validation {
+    condition     = contains(["X86_64", "ARM64"], var.cpu_architecture)
+    error_message = "cpu_architecture must be X86_64 or ARM64."
+  }
+}
+
+variable "api_cpu" {
+  description = "Fargate CPU units allocated to each API task."
+  type        = number
+  default     = 1024
+}
+
+variable "api_memory_mib" {
+  description = "Memory allocated to each API task."
+  type        = number
+  default     = 4096
+}
+
+variable "api_desired_count" {
+  description = "API tasks to run after an image digest is configured."
+  type        = number
+  default     = 1
+
+  validation {
+    condition     = var.api_desired_count >= 0
+    error_message = "api_desired_count cannot be negative."
+  }
+}
+
+variable "worker_cpu" {
+  description = "Fargate CPU units allocated to each evaluation worker or utility task."
+  type        = number
+  default     = 2048
+}
+
+variable "worker_memory_mib" {
+  description = "Memory allocated to each evaluation worker or utility task."
+  type        = number
+  default     = 8192
+}
+
+variable "worker_desired_count" {
+  description = "Worker tasks to run after an image digest is configured."
+  type        = number
+  default     = 1
+
+  validation {
+    condition     = var.worker_desired_count >= 0
+    error_message = "worker_desired_count cannot be negative."
+  }
+}
+
+variable "worker_use_spot" {
+  description = "Run resumable evaluation workers on Fargate Spot capacity."
+  type        = bool
+  default     = true
+}
+
+variable "load_balancer_deletion_protection" {
+  description = "Protect the application load balancer from accidental deletion."
+  type        = bool
+  default     = false
+}
+
+variable "load_balancer_certificate_arn" {
+  description = "Validated ACM certificate ARN used by the public HTTPS listener."
+  type        = string
+
+  validation {
+    condition = can(regex(
+      "^arn:[a-z0-9-]+:acm:[a-z0-9-]+:[0-9]{12}:certificate/[a-f0-9-]+$",
+      var.load_balancer_certificate_arn,
+    ))
+    error_message = "load_balancer_certificate_arn must be an ACM certificate ARN."
+  }
+}

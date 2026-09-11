@@ -9,6 +9,7 @@ from typing import Annotated, Any, Literal
 import yaml
 from pydantic import Field, PositiveFloat, PositiveInt, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from sqlalchemy import URL
 
 from ragops.contracts.base import Contract
 from ragops.contracts.retrieval import VariantConfig
@@ -25,8 +26,16 @@ class Settings(BaseSettings):
 
     environment: Literal["local", "test", "production"] = "local"
     database_url: str = "postgresql+asyncpg://ragops:ragops@localhost:5432/ragops"
+    database_host: str | None = Field(default=None, min_length=1)
+    database_port: int = Field(default=5432, ge=1, le=65_535)
+    database_name: str = Field(default="ragops", min_length=1)
+    database_user: str | None = Field(default=None, min_length=1)
+    database_password: SecretStr | None = None
+    database_require_ssl: bool = True
     configuration_directory: Path = Path("config")
     artifact_directory: Path = Path("artifacts")
+    artifact_bucket: str | None = Field(default=None, min_length=3)
+    artifact_s3_prefix: str = ""
     prompt_directory: Path = Path("prompts")
     model_cache_directory: Path = Path("artifacts/models")
     model_device: str | None = None
@@ -38,6 +47,49 @@ class Settings(BaseSettings):
     generation_timeout_seconds: PositiveFloat = 30.0
     answer_context_count: PositiveInt = 10
     online_evaluation_sample_rate: float = Field(default=0.05, ge=0, le=1)
+
+    @model_validator(mode="after")
+    def compose_database_url(self) -> "Settings":
+        """Build an asyncpg URL from independently injected RDS secret fields."""
+        component_fields = {
+            "database_host",
+            "database_port",
+            "database_name",
+            "database_user",
+            "database_password",
+            "database_require_ssl",
+        }
+        if not component_fields.intersection(self.model_fields_set):
+            return self
+        if "database_url" in self.model_fields_set:
+            raise ValueError("configure either database_url or database component fields, not both")
+
+        missing = [
+            name
+            for name, value in (
+                ("database_host", self.database_host),
+                ("database_user", self.database_user),
+                ("database_password", self.database_password),
+            )
+            if value is None
+        ]
+        if missing:
+            raise ValueError("database component configuration requires " + ", ".join(missing))
+
+        assert self.database_host is not None
+        assert self.database_user is not None
+        assert self.database_password is not None
+        query = {"ssl": "require"} if self.database_require_ssl else {}
+        self.database_url = URL.create(
+            "postgresql+asyncpg",
+            username=self.database_user,
+            password=self.database_password.get_secret_value(),
+            host=self.database_host,
+            port=self.database_port,
+            database=self.database_name,
+            query=query,
+        ).render_as_string(hide_password=False)
+        return self
 
 
 class EmbeddingProfile(Contract):

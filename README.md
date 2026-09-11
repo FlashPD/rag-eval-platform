@@ -246,6 +246,18 @@ Validated retrieval variants, model profiles, pricing, and regression thresholds
 `config/`. Runtime settings use the `RAGOPS_` environment prefix; for example,
 `RAGOPS_DATABASE_URL` overrides the local PostgreSQL URL. See `.env.example` for the full set.
 
+ECS can inject an RDS-generated Secrets Manager document without constructing a URL in Terraform:
+set `RAGOPS_DATABASE_HOST`, `RAGOPS_DATABASE_PORT`, `RAGOPS_DATABASE_NAME`,
+`RAGOPS_DATABASE_USER`, and `RAGOPS_DATABASE_PASSWORD`. The application safely URL-encodes the
+credentials and requires TLS by default. Component fields and `RAGOPS_DATABASE_URL` are mutually
+exclusive.
+
+Setting `RAGOPS_ARTIFACT_BUCKET` enables S3 synchronization. API and worker startup hydrate BM25
+indexes, ingestion also hydrates checksum-pinned dataset caches and publishes both caches and the
+completed content-addressed index, and `ragops eval report` publishes its JSON and Markdown files.
+`RAGOPS_ARTIFACT_S3_PREFIX` optionally scopes all keys to an environment. Model caches are excluded
+because model weights are reproducible upstream dependencies rather than platform artifacts.
+
 ### Database
 
 Database-backed commands require PostgreSQL with pgvector running at the configured

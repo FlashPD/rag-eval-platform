@@ -7,6 +7,7 @@ from uuid import UUID
 from fastapi import FastAPI, HTTPException, Response, status
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from ragops.artifact_store import ArtifactStore, build_artifact_store
 from ragops.config import Settings, load_config_bundle
 from ragops.contracts import (
     AnswerRequest,
@@ -37,6 +38,8 @@ def create_app(
     search_service: SearchExecutor | None = None,
     evaluation_service: EvaluationService | None = None,
     answer_service: AnswerService | None = None,
+    *,
+    artifact_store: ArtifactStore | None = None,
 ) -> FastAPI:
     """Build the FastAPI application."""
 
@@ -50,6 +53,8 @@ def create_app(
         needs_evaluation = application.state.evaluation_service is None
         needs_answer = application.state.answer_service is None
         if needs_search or needs_evaluation:
+            configured_store = artifact_store or build_artifact_store(settings)
+            await configured_store.hydrate_runtime()
             bundle = load_config_bundle(settings.configuration_directory)
             engine = create_engine(settings.database_url)
             sessions = create_session_factory(engine)

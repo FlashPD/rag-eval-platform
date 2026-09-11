@@ -144,6 +144,15 @@ resource "aws_vpc_security_group_ingress_rule" "load_balancer_http" {
   ip_protocol       = "tcp"
 }
 
+resource "aws_vpc_security_group_ingress_rule" "load_balancer_https" {
+  security_group_id = aws_security_group.load_balancer.id
+  description       = "Public HTTPS ingress"
+  cidr_ipv4         = "0.0.0.0/0"
+  from_port         = 443
+  to_port           = 443
+  ip_protocol       = "tcp"
+}
+
 resource "aws_vpc_security_group_egress_rule" "load_balancer_application" {
   security_group_id            = aws_security_group.load_balancer.id
   description                  = "API traffic to application tasks"
@@ -182,6 +191,24 @@ resource "aws_vpc_security_group_egress_rule" "application_database" {
   from_port                    = 5432
   to_port                      = 5432
   ip_protocol                  = "tcp"
+}
+
+resource "aws_vpc_security_group_egress_rule" "application_dns_udp" {
+  security_group_id = aws_security_group.application.id
+  description       = "DNS resolution through the VPC resolver"
+  cidr_ipv4         = var.vpc_cidr
+  from_port         = 53
+  to_port           = 53
+  ip_protocol       = "udp"
+}
+
+resource "aws_vpc_security_group_egress_rule" "application_dns_tcp" {
+  security_group_id = aws_security_group.application.id
+  description       = "Large DNS responses through the VPC resolver"
+  cidr_ipv4         = var.vpc_cidr
+  from_port         = 53
+  to_port           = 53
+  ip_protocol       = "tcp"
 }
 
 resource "aws_vpc_security_group_ingress_rule" "database_application" {

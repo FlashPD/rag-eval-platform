@@ -3,7 +3,9 @@ from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 import httpx
+import pytest
 
+import ragops.api as api_module
 from ragops.api import app, create_app
 from ragops.contracts import (
     AnswerRequest,
@@ -32,6 +34,24 @@ class FakeSearchService:
             variant_hash="b" * 64,
             index_fingerprint="c" * 64,
         )
+
+
+class FakeArtifactStore:
+    def __init__(self) -> None:
+        self.runtime_hydrations = 0
+
+    async def hydrate_runtime(self) -> int:
+        self.runtime_hydrations += 1
+        return 0
+
+    async def hydrate_ingestion(self) -> int:
+        return 0
+
+    async def publish_ingestion(self, bm25_artifact: object) -> int:
+        return 0
+
+    async def publish_report(self, run_id: object, files: object) -> int:
+        return 0
 
 
 class MissingDatasetSearchService:
@@ -90,6 +110,45 @@ def test_readiness() -> None:
 
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+
+
+def test_lifespan_hydrates_runtime_artifacts_before_building_retrieval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    artifact_store = FakeArtifactStore()
+    bundle = api_module.load_config_bundle(api_module.Settings().configuration_directory)
+    events: list[str] = []
+
+    class FakeEngine:
+        async def dispose(self) -> None:
+            events.append("disposed")
+
+    original_hydrate = artifact_store.hydrate_runtime
+
+    async def record_hydration() -> int:
+        events.append("hydrated")
+        return await original_hydrate()
+
+    artifact_store.hydrate_runtime = record_hydration  # type: ignore[method-assign]
+    monkeypatch.setattr(api_module, "load_config_bundle", lambda _: bundle)
+    monkeypatch.setattr(api_module, "create_engine", lambda _: FakeEngine())
+    monkeypatch.setattr(api_module, "create_session_factory", lambda _: object())
+
+    def build_search(*args: object, **kwargs: object) -> FakeSearchService:
+        events.append("retrieval-built")
+        return FakeSearchService()
+
+    monkeypatch.setattr(api_module, "build_retrieval_pipeline", build_search)
+    monkeypatch.setattr(api_module, "DatabaseEvaluationService", lambda *args, **kwargs: object())
+    application = create_app(artifact_store=artifact_store)
+
+    async def run_lifespan() -> None:
+        async with application.router.lifespan_context(application):
+            assert artifact_store.runtime_hydrations == 1
+
+    asyncio.run(run_lifespan())
+
+    assert events == ["hydrated", "retrieval-built", "disposed"]
 
 
 def test_prometheus_metrics_include_http_requests() -> None:
