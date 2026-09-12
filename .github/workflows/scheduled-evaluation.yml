@@ -44,15 +44,15 @@ jobs:
       RAGOPS_OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       RETRIEVAL_VARIANTS: bm25,dense_bge_small,hybrid_rrf,hybrid_rrf_rerank
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
           cache: pip
       - name: Require the provider secret
         run: test -n "${RAGOPS_OPENAI_API_KEY}"
       - name: Restore model weights
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: artifacts/models
           key: >-
@@ -60,7 +60,7 @@ jobs:
             hashFiles('config/models.yaml', 'requirements-dev.lock') }}
       - name: Restore ${{ matrix.dataset }} retrieval index
         id: retrieval-index-cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: |
             artifacts/bm25
@@ -69,7 +69,10 @@ jobs:
           key: >-
             ${{ runner.os }}-${{ runner.arch }}-ragops-${{ matrix.dataset }}-index-v1-${{
             hashFiles('config/datasets.yaml', 'config/models.yaml', 'requirements-dev.lock',
-            'migrations/**', 'src/ragops/ingestion/**', 'src/ragops/persistence/**') }}
+            'migrations/versions/**', 'src/ragops/ingestion/**',
+            'src/ragops/persistence/**') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-ragops-${{ matrix.dataset }}-index-v1-
       - name: Install project
         run: |
           python -m pip install -r requirements-dev.lock
@@ -81,7 +84,7 @@ jobs:
           "artifacts/ci-index/${{ matrix.dataset }}.dump"
       - name: Save retrieval index
         if: steps.retrieval-index-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: |
             artifacts/bm25
@@ -135,7 +138,7 @@ jobs:
           fi
       - name: Upload evaluation report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.dataset }}-scheduled-answer-evaluation
           path: artifacts/scheduled/${{ matrix.dataset }}

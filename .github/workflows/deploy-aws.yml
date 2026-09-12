@@ -24,7 +24,7 @@ jobs:
       group: ragops-production
       cancel-in-progress: false
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Require the protected branch and deployment configuration
         env:
