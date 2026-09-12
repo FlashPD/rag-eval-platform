@@ -100,6 +100,45 @@ variable "log_retention_days" {
   default     = 30
 }
 
+variable "adot_collector_image" {
+  description = "Version-pinned AWS Distro for OpenTelemetry collector image used by ECS sidecars."
+  type        = string
+  default     = "public.ecr.aws/aws-observability/aws-otel-collector:v0.49.0"
+
+  validation {
+    condition = can(regex(
+      "^public\\.ecr\\.aws/aws-observability/aws-otel-collector:v[0-9]+\\.[0-9]+\\.[0-9]+$",
+      var.adot_collector_image,
+    ))
+    error_message = "adot_collector_image must use an explicit semantic-version tag from the AWS public ECR repository."
+  }
+}
+
+variable "alarm_notification_email" {
+  description = "Optional email address subscribed to production alarms. Confirmation is required before delivery."
+  type        = string
+  default     = ""
+
+  validation {
+    condition = (
+      var.alarm_notification_email == "" ||
+      can(regex("^[^[:space:]@]+@[^[:space:]@]+\\.[^[:space:]@]+$", var.alarm_notification_email))
+    )
+    error_message = "alarm_notification_email must be empty or a valid email address."
+  }
+}
+
+variable "hourly_llm_cost_alarm_usd" {
+  description = "Alarm when generated OpenTelemetry cost metrics exceed this amount in one hour."
+  type        = number
+  default     = 5
+
+  validation {
+    condition     = var.hourly_llm_cost_alarm_usd > 0
+    error_message = "hourly_llm_cost_alarm_usd must be positive."
+  }
+}
+
 variable "application_image_digest" {
   description = "Immutable sha256 digest deployed from the application ECR repository; null keeps services scaled to zero during initial provisioning."
   type        = string

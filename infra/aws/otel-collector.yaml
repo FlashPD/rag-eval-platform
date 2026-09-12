@@ -1,0 +1,44 @@
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch: {}
+  resource_detection/ecs:
+    detectors: [env, ecs]
+    timeout: 2s
+    override: false
+
+exporters:
+  awsxray:
+    region: ${env:AWS_REGION}
+  awsemf:
+    region: ${env:AWS_REGION}
+    namespace: RagOps
+    log_group_name: ${env:RAGOPS_METRICS_LOG_GROUP}
+    log_stream_name: "{TaskId}"
+    dimension_rollup_option: NoDimensionRollup
+    resource_to_telemetry_conversion:
+      enabled: true
+    metric_declarations:
+      - dimensions:
+          - []
+          - [service.name]
+          - [service.name, http.route, http.response.status_code]
+          - [service.name, stage]
+          - [service.name, provider, model, outcome]
+        metric_name_selectors:
+          - '^ragops\.'
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [resource_detection/ecs, batch]
+      exporters: [awsxray]
+    metrics:
+      receivers: [otlp]
+      processors: [resource_detection/ecs, batch]
+      exporters: [awsemf]

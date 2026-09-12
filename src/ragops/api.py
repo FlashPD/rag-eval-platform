@@ -2,9 +2,11 @@
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Annotated
 from uuid import UUID
 
-from fastapi import FastAPI, HTTPException, Response, status
+from fastapi import Depends, FastAPI, HTTPException, Response, Security, status
+from fastapi.security import APIKeyHeader
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from ragops.artifact_store import ArtifactStore, build_artifact_store
@@ -31,6 +33,7 @@ from ragops.retrieval.errors import (
 from ragops.retrieval.factory import build_retrieval_pipeline
 from ragops.retrieval.pipeline import SearchExecutor
 from ragops.schemas import HealthResponse
+from ragops.security import ApiKeyAuthenticator
 from ragops.telemetry import configure_telemetry, instrument_fastapi, prometheus_response
 
 
@@ -45,6 +48,25 @@ def create_app(
 
     settings = Settings()
     configure_telemetry(settings)
+    authenticator = ApiKeyAuthenticator(settings.api_key_hashes)
+    api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+    async def require_api_key(
+        api_key: Annotated[str | None, Security(api_key_header)],
+    ) -> None:
+        if not authenticator.configured:
+            if settings.environment == "production":
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="API authentication is not configured",
+                )
+            return
+        if not authenticator.accepts(api_key):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="invalid API key",
+                headers={"WWW-Authenticate": "ApiKey"},
+            )
 
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
@@ -108,12 +130,17 @@ def create_app(
         """Report whether the service is ready to accept requests."""
         return HealthResponse(status="ok")
 
-    @application.get("/metrics", tags=["operations"], include_in_schema=False)
+    @application.get(
+        "/metrics",
+        tags=["operations"],
+        include_in_schema=False,
+        dependencies=[Depends(require_api_key)],
+    )
     async def metrics() -> Response:
         """Expose process and retrieval metrics for Prometheus."""
         return prometheus_response()
 
-    @application.post("/v1/search", tags=["retrieval"])
+    @application.post("/v1/search", tags=["retrieval"], dependencies=[Depends(require_api_key)])
     async def search(request: SearchRequest) -> SearchResponse:
         service: SearchExecutor | None = application.state.search_service
         if service is None:
@@ -133,7 +160,7 @@ def create_app(
         except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
 
-    @application.post("/v1/answer", tags=["generation"])
+    @application.post("/v1/answer", tags=["generation"], dependencies=[Depends(require_api_key)])
     async def answer(request: AnswerRequest) -> AnswerResponse:
         service: AnswerService | None = application.state.answer_service
         if service is None:
@@ -156,7 +183,12 @@ def create_app(
         except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
 
-    @application.post("/v1/evals", tags=["evaluation"], status_code=status.HTTP_202_ACCEPTED)
+    @application.post(
+        "/v1/evals",
+        tags=["evaluation"],
+        status_code=status.HTTP_202_ACCEPTED,
+        dependencies=[Depends(require_api_key)],
+    )
     async def submit_evaluation(request: EvalRunSpec, response: Response) -> EvalRun:
         """Queue an evaluation run for a worker and return the created record.
 
@@ -175,7 +207,9 @@ def create_app(
         response.headers["Location"] = f"/v1/evals/{run.id}"
         return run
 
-    @application.get("/v1/evals/{run_id}", tags=["evaluation"])
+    @application.get(
+        "/v1/evals/{run_id}", tags=["evaluation"], dependencies=[Depends(require_api_key)]
+    )
     async def read_evaluation(run_id: UUID) -> EvalRun:
         """Report the current state and progress of one evaluation run."""
         service: EvaluationService | None = application.state.evaluation_service

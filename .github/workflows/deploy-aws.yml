@@ -1,58 +1,96 @@
-name: Deploy AWS
+name: Deploy AWS release
 
 on:
   workflow_dispatch:
-    inputs:
-      enable_generation:
-        description: Inject the previously populated OpenAI secret
-        required: true
-        default: false
-        type: boolean
-      enable_artifact_sync:
-        description: Sync the S3 runtime prefix before each task starts
-        required: true
-        default: false
-        type: boolean
 
 permissions:
   contents: read
   id-token: write
 
-concurrency:
-  group: ragops-production-deploy
-  cancel-in-progress: false
+env:
+  AWS_REGION: us-east-1
+  TERRAFORM_VERSION: 1.14.6
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+  TF_VAR_alarm_notification_email: ${{ vars.AWS_ALARM_NOTIFICATION_EMAIL }}
+  TF_VAR_load_balancer_certificate_arn: ${{ vars.AWS_ACM_CERTIFICATE_ARN }}
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     environment: production
-    env:
-      AWS_REGION: ${{ vars.AWS_REGION }}
-      ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY || 'ragops' }}
-      TF_IN_AUTOMATION: "true"
-      TF_VAR_aws_region: ${{ vars.AWS_REGION }}
-      TF_VAR_image_tag: ${{ github.sha }}
-      TF_VAR_allowed_ingress_cidrs: ${{ vars.AWS_ALLOWED_INGRESS_CIDRS }}
-      TF_VAR_enable_generation: ${{ inputs.enable_generation }}
-      TF_VAR_enable_artifact_sync: ${{ inputs.enable_artifact_sync }}
+    concurrency:
+      group: ragops-production
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
 
-      - name: Configure short-lived AWS credentials
-        uses: aws-actions/configure-aws-credentials@v5
+      - name: Require the protected branch and deployment configuration
+        env:
+          APPLY_ROLE_ARN: ${{ vars.AWS_TERRAFORM_APPLY_ROLE_ARN }}
+          CERTIFICATE_ARN: ${{ vars.AWS_ACM_CERTIFICATE_ARN }}
+          STATE_BUCKET: ${{ vars.AWS_TERRAFORM_STATE_BUCKET }}
+          STATE_KEY: ${{ vars.AWS_TERRAFORM_STATE_KEY }}
+        run: >-
+          test "${GITHUB_REF}" = "refs/heads/dev" &&
+          test -n "${APPLY_ROLE_ARN}" &&
+          test -n "${CERTIFICATE_ARN}" &&
+          test -n "${STATE_BUCKET}" &&
+          test -n "${STATE_KEY}"
+
+      - uses: aws-actions/configure-aws-credentials@v6.2.3
         with:
-          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
-          aws-region: ${{ vars.AWS_REGION }}
+          role-to-assume: ${{ vars.AWS_TERRAFORM_APPLY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+
+      - name: Initialize remote state
+        working-directory: infra/aws
+        run: >-
+          terraform init
+          -backend-config="bucket=${{ vars.AWS_TERRAFORM_STATE_BUCKET }}"
+          -backend-config="key=${{ vars.AWS_TERRAFORM_STATE_KEY }}"
+          -backend-config="region=${AWS_REGION}"
+
+      - name: Resolve the provisioned ECR repository
+        id: infrastructure
+        working-directory: infra/aws
+        run: |
+          ECR_URL=$(terraform output -raw ecr_repository_url)
+          PREVIOUS_DIGEST=$(terraform output -raw deployed_image_digest 2>/dev/null || true)
+          PREVIOUS_API_COUNT=$(terraform output -raw configured_api_desired_count 2>/dev/null || true)
+          PREVIOUS_WORKER_COUNT=$(terraform output -raw configured_worker_desired_count 2>/dev/null || true)
+          test -n "${ECR_URL}"
+          if [[ ! "${PREVIOUS_API_COUNT}" =~ ^[0-9]+$ ]]; then
+            PREVIOUS_API_COUNT=1
+          fi
+          if [[ ! "${PREVIOUS_WORKER_COUNT}" =~ ^[0-9]+$ ]]; then
+            PREVIOUS_WORKER_COUNT=1
+          fi
+          {
+            echo "ecr_url=${ECR_URL}"
+            echo "ecr_repository=${ECR_URL##*/}"
+            if [[ "${PREVIOUS_DIGEST}" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+              echo "previous_digest=${PREVIOUS_DIGEST}"
+            fi
+            echo "previous_api_count=${PREVIOUS_API_COUNT}"
+            echo "previous_worker_count=${PREVIOUS_WORKER_COUNT}"
+          } >> "${GITHUB_OUTPUT}"
 
       - name: Sign in to ECR
-        id: ecr
         uses: aws-actions/amazon-ecr-login@v2
 
       - uses: docker/setup-buildx-action@v3
 
       - name: Check for an existing immutable image
         id: image
+        env:
+          ECR_REPOSITORY: ${{ steps.infrastructure.outputs.ecr_repository }}
         run: |
           if aws ecr describe-images \
             --repository-name "${ECR_REPOSITORY}" \
@@ -69,15 +107,15 @@ jobs:
           context: .
           load: true
           platforms: linux/amd64
-          tags: ${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
+          tags: ${{ steps.infrastructure.outputs.ecr_url }}:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
       - name: Fail on high or critical image vulnerabilities
         if: steps.image.outputs.exists != 'true'
-        uses: aquasecurity/trivy-action@0.33.1
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
-          image-ref: ${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
+          image-ref: ${{ steps.infrastructure.outputs.ecr_url }}:${{ github.sha }}
           format: table
           ignore-unfixed: true
           severity: CRITICAL,HIGH
@@ -85,49 +123,47 @@ jobs:
 
       - name: Push scanned image
         if: steps.image.outputs.exists != 'true'
-        run: docker push "${{ steps.ecr.outputs.registry }}/${ECR_REPOSITORY}:${GITHUB_SHA}"
+        env:
+          ECR_URL: ${{ steps.infrastructure.outputs.ecr_url }}
+        run: docker push "${ECR_URL}:${GITHUB_SHA}"
 
-      - uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: 1.13.5
-          terraform_wrapper: false
+      - name: Resolve immutable image digest
+        id: release
+        env:
+          ECR_REPOSITORY: ${{ steps.infrastructure.outputs.ecr_repository }}
+        run: |
+          IMAGE_DIGEST=$(aws ecr describe-images \
+            --repository-name "${ECR_REPOSITORY}" \
+            --image-ids "imageTag=${GITHUB_SHA}" \
+            --query 'imageDetails[0].imageDigest' \
+            --output text)
+          test "${IMAGE_DIGEST}" != "None"
+          echo "image_digest=${IMAGE_DIGEST}" >> "${GITHUB_OUTPUT}"
 
-      - name: Initialize remote state
+      - name: Register release tasks while services remain stopped
+        id: stage
         working-directory: infra/aws
-        run: >-
-          terraform init -input=false
-          -backend-config="bucket=${{ vars.TERRAFORM_STATE_BUCKET }}"
-          -backend-config="key=ragops/production.tfstate"
-          -backend-config="region=${AWS_REGION}"
-
-      - name: Plan infrastructure
-        working-directory: infra/aws
-        run: terraform plan -input=false -out=deployment.tfplan
-
-      - name: Apply infrastructure
-        working-directory: infra/aws
-        run: terraform apply -input=false -auto-approve deployment.tfplan
+        env:
+          IMAGE_DIGEST: ${{ steps.release.outputs.image_digest }}
+        run: |
+          echo "started=true" >> "${GITHUB_OUTPUT}"
+          terraform plan -out=release-staged.tfplan \
+            -var="application_image_digest=${IMAGE_DIGEST}" \
+            -var="api_desired_count=0" \
+            -var="worker_desired_count=0"
+          terraform apply -auto-approve release-staged.tfplan
 
       - name: Run database migrations as a one-off task
-        id: migrate
         working-directory: infra/aws
-        shell: bash
         run: |
           CLUSTER=$(terraform output -raw ecs_cluster_name)
           TASK_DEFINITION=$(terraform output -raw migration_task_definition_arn)
-          SUBNETS=$(terraform output -json application_subnet_ids | jq -r 'join(",")')
-          SECURITY_GROUP=$(terraform output -raw application_security_group_id)
-          PUBLIC_IP=$(terraform output -raw assign_public_ip)
-          if [[ "${PUBLIC_IP}" == "true" ]]; then
-            ASSIGN_PUBLIC_IP=ENABLED
-          else
-            ASSIGN_PUBLIC_IP=DISABLED
-          fi
+          NETWORK_CONFIGURATION=$(terraform output -raw ecs_network_configuration_json)
           TASK_ARN=$(aws ecs run-task \
             --cluster "${CLUSTER}" \
             --task-definition "${TASK_DEFINITION}" \
-            --launch-type FARGATE \
-            --network-configuration "awsvpcConfiguration={subnets=[${SUBNETS}],securityGroups=[${SECURITY_GROUP}],assignPublicIp=${ASSIGN_PUBLIC_IP}}" \
+            --capacity-provider-strategy capacityProvider=FARGATE,weight=1 \
+            --network-configuration "${NETWORK_CONFIGURATION}" \
             --query 'tasks[0].taskArn' \
             --output text)
           test -n "${TASK_ARN}" && test "${TASK_ARN}" != "None"
@@ -142,24 +178,69 @@ jobs:
             exit 1
           fi
 
-      - name: Roll services onto the migrated release
+      - name: Require runtime secrets before starting services
+        working-directory: infra/aws
+        run: |
+          OPENAI_SECRET_ARN=$(terraform output -raw openai_api_key_secret_arn)
+          API_KEYS_SECRET_ARN=$(terraform output -raw api_key_hashes_secret_arn)
+          aws secretsmanager get-secret-value \
+            --secret-id "${OPENAI_SECRET_ARN}" \
+            --query SecretString \
+            --output text >/dev/null
+          API_KEY_HASHES=$(aws secretsmanager get-secret-value \
+            --secret-id "${API_KEYS_SECRET_ARN}" \
+            --query SecretString \
+            --output text)
+          jq -e 'type == "array" and length > 0 and all(.[]; test("^[a-f0-9]{64}$"))' \
+            <<< "${API_KEY_HASHES}" >/dev/null
+
+      - name: Roll out the migrated release
+        working-directory: infra/aws
+        env:
+          IMAGE_DIGEST: ${{ steps.release.outputs.image_digest }}
+        run: |
+          terraform plan -out=release.tfplan \
+            -var="application_image_digest=${IMAGE_DIGEST}"
+          terraform apply -auto-approve release.tfplan
+
+      - name: Verify stable services and healthy load-balancer targets
         working-directory: infra/aws
         run: |
           CLUSTER=$(terraform output -raw ecs_cluster_name)
           API_SERVICE=$(terraform output -raw api_service_name)
           WORKER_SERVICE=$(terraform output -raw worker_service_name)
-          aws ecs update-service --cluster "${CLUSTER}" --service "${API_SERVICE}" --force-new-deployment >/dev/null
-          aws ecs update-service --cluster "${CLUSTER}" --service "${WORKER_SERVICE}" --force-new-deployment >/dev/null
-          aws ecs wait services-stable --cluster "${CLUSTER}" --services "${API_SERVICE}" "${WORKER_SERVICE}"
+          TARGET_GROUP=$(terraform output -raw api_target_group_arn)
+          aws ecs wait services-stable \
+            --cluster "${CLUSTER}" \
+            --services "${API_SERVICE}" "${WORKER_SERVICE}"
+          aws elbv2 wait target-in-service --target-group-arn "${TARGET_GROUP}"
 
-      - name: Verify healthy load-balancer targets
+      - name: Restore the previous release after a failed rollout
+        if: >-
+          failure() &&
+          steps.stage.outputs.started == 'true' &&
+          steps.infrastructure.outputs.previous_digest != ''
         working-directory: infra/aws
-        run: aws elbv2 wait target-in-service --target-group-arn "$(terraform output -raw api_target_group_arn)"
+        env:
+          PREVIOUS_API_COUNT: ${{ steps.infrastructure.outputs.previous_api_count }}
+          PREVIOUS_DIGEST: ${{ steps.infrastructure.outputs.previous_digest }}
+          PREVIOUS_WORKER_COUNT: ${{ steps.infrastructure.outputs.previous_worker_count }}
+        run: |
+          terraform plan -out=rollback.tfplan \
+            -var="application_image_digest=${PREVIOUS_DIGEST}" \
+            -var="api_desired_count=${PREVIOUS_API_COUNT}" \
+            -var="worker_desired_count=${PREVIOUS_WORKER_COUNT}"
+          terraform apply -auto-approve rollback.tfplan
 
       - name: Publish deployment summary
         working-directory: infra/aws
+        env:
+          IMAGE_DIGEST: ${{ steps.release.outputs.image_digest }}
         run: |
-          echo "### AWS deployment" >> "${GITHUB_STEP_SUMMARY}"
-          echo "- Image: \`${GITHUB_SHA}\`" >> "${GITHUB_STEP_SUMMARY}"
-          echo "- URL: $(terraform output -raw application_url)" >> "${GITHUB_STEP_SUMMARY}"
-          echo "- Dashboard: $(terraform output -raw cloudwatch_dashboard_name)" >> "${GITHUB_STEP_SUMMARY}"
+          {
+            echo "### AWS release"
+            echo "- Commit: \`${GITHUB_SHA}\`"
+            echo "- Image digest: \`${IMAGE_DIGEST}\`"
+            echo "- URL: $(terraform output -raw application_url)"
+            echo "- Dashboard: $(terraform output -raw cloudwatch_dashboard_name)"
+          } >> "${GITHUB_STEP_SUMMARY}"

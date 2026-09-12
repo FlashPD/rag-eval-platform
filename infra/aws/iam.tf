@@ -25,6 +25,7 @@ data "aws_iam_policy_document" "task_execution_secrets" {
     actions = ["secretsmanager:GetSecretValue"]
     resources = [
       aws_db_instance.this.master_user_secret[0].secret_arn,
+      aws_secretsmanager_secret.api_key_hashes.arn,
       aws_secretsmanager_secret.openai_api_key.arn,
     ]
   }
@@ -106,6 +107,24 @@ data "aws_iam_policy_document" "application_task" {
       "xray:PutTraceSegments",
     ]
     resources = ["*"]
+  }
+
+  statement {
+    sid       = "DiscoverMetricLogGroup"
+    actions   = ["logs:DescribeLogGroups"]
+    resources = ["*"]
+  }
+
+  statement {
+    sid = "PublishEmbeddedMetrics"
+    actions = [
+      "logs:CreateLogStream",
+      "logs:DescribeLogStreams",
+      "logs:PutLogEvents",
+    ]
+    resources = [
+      "arn:${data.aws_partition.current.partition}:logs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:log-group:${aws_cloudwatch_log_group.application_metrics.name}:*",
+    ]
   }
 }
 

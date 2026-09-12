@@ -36,6 +36,7 @@ from ragops.ingestion.service import IngestionService
 from ragops.persistence import create_engine, create_session_factory
 from ragops.provenance import resolve_git_commit, resolve_image_digest
 from ragops.retrieval.factory import build_retrieval_pipeline
+from ragops.telemetry import configure_telemetry
 from ragops.worker import JobWorker, build_evaluation_job_handler
 
 DEFAULT_BASELINE_DIRECTORY = Path("evals/baselines")
@@ -339,6 +340,7 @@ async def _calibrate_judges(arguments: argparse.Namespace) -> int:
 async def _run_worker(arguments: argparse.Namespace) -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     settings = Settings()
+    configure_telemetry(settings)
     await build_artifact_store(settings).hydrate_runtime()
     bundle = load_config_bundle(settings.configuration_directory)
     engine = create_engine(settings.database_url)

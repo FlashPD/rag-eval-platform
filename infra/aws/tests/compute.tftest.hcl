@@ -54,6 +54,12 @@ mock_provider "aws" {
     }
   }
 
+  mock_resource "aws_sns_topic" {
+    defaults = {
+      arn = "arn:aws:sns:us-east-1:123456789012:ragops-production-operations"
+    }
+  }
+
   mock_resource "aws_cloudwatch_log_group" {
     defaults = {
       name = "/ecs/ragops-production/workload"
@@ -155,6 +161,44 @@ run "immutable_image_configures_runtime_contracts" {
 
   assert {
     condition = contains(
+      jsondecode(aws_ecs_task_definition.api.container_definitions)[0].environment,
+      { name = "RAGOPS_OTLP_ENDPOINT", value = "http://127.0.0.1:4318" },
+    )
+    error_message = "The API task must export telemetry to its local collector sidecar."
+  }
+
+  assert {
+    condition = contains(
+      jsondecode(aws_ecs_task_definition.api.container_definitions)[0].environment,
+      {
+        name  = "RAGOPS_IMAGE_DIGEST"
+        value = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+    )
+    error_message = "Evaluation provenance must include the deployed image digest."
+  }
+
+  assert {
+    condition = (
+      length(jsondecode(aws_ecs_task_definition.api.container_definitions)) == 2 &&
+      jsondecode(aws_ecs_task_definition.api.container_definitions)[1].name == "aws-otel-collector" &&
+      jsondecode(aws_ecs_task_definition.api.container_definitions)[1].image ==
+      "public.ecr.aws/aws-observability/aws-otel-collector:v0.49.0"
+    )
+    error_message = "The API task must include the version-pinned ADOT sidecar."
+  }
+
+  assert {
+    condition = (
+      length(jsondecode(aws_ecs_task_definition.worker.container_definitions)) == 2 &&
+      jsondecode(aws_ecs_task_definition.worker.container_definitions)[1].name ==
+      "aws-otel-collector"
+    )
+    error_message = "The worker task must include the ADOT sidecar."
+  }
+
+  assert {
+    condition = contains(
       jsondecode(aws_ecs_task_definition.api.container_definitions)[0].secrets,
       {
         name      = "RAGOPS_DATABASE_PASSWORD"
@@ -162,6 +206,17 @@ run "immutable_image_configures_runtime_contracts" {
       },
     )
     error_message = "The API task must select the password from the RDS JSON secret."
+  }
+
+  assert {
+    condition = contains(
+      jsondecode(aws_ecs_task_definition.api.container_definitions)[0].secrets,
+      {
+        name      = "RAGOPS_API_KEY_HASHES"
+        valueFrom = "arn:aws:secretsmanager:us-east-1:123456789012:secret:openai"
+      },
+    )
+    error_message = "The API task must receive only hashed client credentials."
   }
 
   assert {
@@ -177,5 +232,20 @@ run "immutable_image_configures_runtime_contracts" {
   assert {
     condition     = one(aws_lb_listener.http.default_action).type == "redirect"
     error_message = "The plaintext listener must only redirect to HTTPS."
+  }
+
+  assert {
+    condition     = aws_cloudwatch_dashboard.service.dashboard_name == "ragops-production-service"
+    error_message = "The production service dashboard must be provisioned."
+  }
+
+  assert {
+    condition = alltrue([
+      contains(aws_cloudwatch_metric_alarm.api_error_rate.alarm_actions, aws_sns_topic.operations.arn),
+      contains(aws_cloudwatch_metric_alarm.api_p95_latency.alarm_actions, aws_sns_topic.operations.arn),
+      contains(aws_cloudwatch_metric_alarm.database_free_storage.alarm_actions, aws_sns_topic.operations.arn),
+      contains(aws_cloudwatch_metric_alarm.hourly_llm_cost.alarm_actions, aws_sns_topic.operations.arn),
+    ])
+    error_message = "Operational alarms must notify the shared SNS topic."
   }
 }

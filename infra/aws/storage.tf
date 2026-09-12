@@ -98,3 +98,9 @@ resource "aws_secretsmanager_secret" "openai_api_key" {
   description             = "OpenAI API key injected into ragops generation and judge tasks"
   recovery_window_in_days = 7
 }
+
+resource "aws_secretsmanager_secret" "api_key_hashes" {
+  name                    = "${local.name_prefix}/api-key-hashes"
+  description             = "JSON array of SHA-256 API key hashes accepted by the public ragops API"
+  recovery_window_in_days = 7
+}

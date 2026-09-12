@@ -16,9 +16,17 @@ RUN groupadd --system --gid 10001 ragops \
 COPY requirements-dev.lock pyproject.toml README.md ./
 COPY src ./src
 
-# The checked-in lock file is used for reproducible CPU builds on both amd64 and arm64.
-RUN python -m pip install --no-cache-dir -r requirements-dev.lock \
-    && python -m pip install --no-cache-dir --no-deps .
+# Preinstall the CPU-only wheel before resolving the cross-platform lock. Without
+# this, PyPI's Linux torch metadata pulls several gigabytes of unused CUDA libraries.
+RUN TORCH_VERSION=$(sed -n 's/^torch==//p' requirements-dev.lock) \
+    && test -n "${TORCH_VERSION}" \
+    && python -m pip install --no-cache-dir \
+        --index-url https://download.pytorch.org/whl/cpu \
+        "torch==${TORCH_VERSION}" \
+    && python -m pip install --no-cache-dir -r requirements-dev.lock \
+    && python -m pip install --no-cache-dir --no-deps . \
+    && python -c "import torch; assert torch.version.cuda is None" \
+    && python -m pip uninstall --yes pip setuptools
 
 COPY alembic.ini ./
 COPY migrations ./migrations

@@ -5,19 +5,29 @@ locals {
     "${aws_ecr_repository.application.repository_url}@${var.application_image_digest}"
   )
 
-  application_environment = [
-    { name = "AWS_REGION", value = var.aws_region },
-    { name = "RAGOPS_ENVIRONMENT", value = var.environment },
-    { name = "RAGOPS_DATABASE_HOST", value = aws_db_instance.this.address },
-    { name = "RAGOPS_DATABASE_PORT", value = tostring(aws_db_instance.this.port) },
-    { name = "RAGOPS_DATABASE_NAME", value = aws_db_instance.this.db_name },
-    { name = "RAGOPS_DATABASE_REQUIRE_SSL", value = "true" },
-    { name = "RAGOPS_CONFIGURATION_DIRECTORY", value = "/app/config" },
-    { name = "RAGOPS_ARTIFACT_DIRECTORY", value = "/app/artifacts" },
-    { name = "RAGOPS_ARTIFACT_BUCKET", value = aws_s3_bucket.artifacts.id },
-    { name = "RAGOPS_MODEL_CACHE_DIRECTORY", value = "/app/artifacts/models" },
-    { name = "RAGOPS_TELEMETRY_SERVICE_NAME", value = "ragops" },
-  ]
+  application_environment = concat(
+    [
+      { name = "AWS_REGION", value = var.aws_region },
+      { name = "RAGOPS_ENVIRONMENT", value = var.environment },
+      { name = "RAGOPS_DATABASE_HOST", value = aws_db_instance.this.address },
+      { name = "RAGOPS_DATABASE_PORT", value = tostring(aws_db_instance.this.port) },
+      { name = "RAGOPS_DATABASE_NAME", value = aws_db_instance.this.db_name },
+      { name = "RAGOPS_DATABASE_REQUIRE_SSL", value = "true" },
+      { name = "RAGOPS_CONFIGURATION_DIRECTORY", value = "/app/config" },
+      { name = "RAGOPS_ARTIFACT_DIRECTORY", value = "/app/artifacts" },
+      { name = "RAGOPS_ARTIFACT_BUCKET", value = aws_s3_bucket.artifacts.id },
+      { name = "RAGOPS_MODEL_CACHE_DIRECTORY", value = "/app/artifacts/models" },
+      { name = "RAGOPS_OTLP_ENDPOINT", value = "http://127.0.0.1:4318" },
+      { name = "RAGOPS_TELEMETRY_SERVICE_NAME", value = local.name_prefix },
+      {
+        name  = "OTEL_RESOURCE_ATTRIBUTES"
+        value = "deployment.environment.name=${var.environment}"
+      },
+    ],
+    var.application_image_digest == null ? [] : [
+      { name = "RAGOPS_IMAGE_DIGEST", value = var.application_image_digest },
+    ],
+  )
 
   database_secrets = [
     {
@@ -31,6 +41,10 @@ locals {
   ]
 
   application_secrets = concat(local.database_secrets, [
+    {
+      name      = "RAGOPS_API_KEY_HASHES"
+      valueFrom = aws_secretsmanager_secret.api_key_hashes.arn
+    },
     {
       name      = "RAGOPS_OPENAI_API_KEY"
       valueFrom = aws_secretsmanager_secret.openai_api_key.arn
@@ -62,6 +76,43 @@ locals {
       initProcessEnabled = true
       capabilities = {
         drop = ["ALL"]
+      }
+    }
+  }
+
+  adot_config = file("${path.module}/otel-collector.yaml")
+
+  adot_container = {
+    name              = "aws-otel-collector"
+    image             = var.adot_collector_image
+    essential         = true
+    cpu               = 0
+    memoryReservation = 256
+    command           = ["--config=env:AOT_CONFIG_CONTENT"]
+    environment = [
+      { name = "AOT_CONFIG_CONTENT", value = local.adot_config },
+      { name = "AWS_REGION", value = var.aws_region },
+      { name = "AWS_DEFAULT_REGION", value = var.aws_region },
+      {
+        name  = "RAGOPS_METRICS_LOG_GROUP"
+        value = aws_cloudwatch_log_group.application_metrics.name
+      },
+    ]
+    readonlyRootFilesystem = true
+    linuxParameters = {
+      initProcessEnabled = true
+      capabilities = {
+        drop = ["ALL"]
+      }
+    }
+    logConfiguration = {
+      logDriver = "awslogs"
+      options = {
+        awslogs-group         = aws_cloudwatch_log_group.workload["otel"].name
+        awslogs-region        = var.aws_region
+        awslogs-stream-prefix = "ecs"
+        mode                  = "non-blocking"
+        max-buffer-size       = "25m"
       }
     }
   }
@@ -183,6 +234,10 @@ resource "aws_ecs_task_definition" "api" {
       environment = local.application_environment
       secrets     = local.application_secrets
       mountPoints = local.container_mount_points
+      dependsOn = [{
+        containerName = "aws-otel-collector"
+        condition     = "START"
+      }]
       portMappings = [{
         name          = "http"
         containerPort = 8000
@@ -212,6 +267,7 @@ resource "aws_ecs_task_definition" "api" {
         }
       }
     }),
+    local.adot_container,
   ])
 }
 
@@ -245,6 +301,10 @@ resource "aws_ecs_task_definition" "worker" {
       environment = local.application_environment
       secrets     = local.application_secrets
       mountPoints = local.container_mount_points
+      dependsOn = [{
+        containerName = "aws-otel-collector"
+        condition     = "START"
+      }]
       stopTimeout = 120
       logConfiguration = {
         logDriver = "awslogs"
@@ -257,6 +317,7 @@ resource "aws_ecs_task_definition" "worker" {
         }
       }
     }),
+    local.adot_container,
   ])
 }
 

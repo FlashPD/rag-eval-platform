@@ -133,6 +133,9 @@ exactly; it just should not be quoted as a headline result.
 - A `POST /v1/search` endpoint with validated request and response schemas, API error mapping, lazy
   model loading, OpenTelemetry spans, Prometheus request and retrieval-stage metrics, a `/metrics`
   endpoint, and health and readiness endpoints.
+- SHA-256 API-key authentication on application and metrics routes with constant-time digest
+  comparison. Local development may run without keys; production fails closed when no key hashes
+  are configured, while load-balancer health probes remain unauthenticated.
 - Asynchronous evaluation submission: `POST /v1/evals` writes the run and its queue job in one
   transaction and returns immediately, `GET /v1/evals/{run_id}` reports progress, and a `ragops
   worker` process claims jobs, renews its lease while a run executes, retries failures, and shuts
@@ -199,12 +202,14 @@ exactly; it just should not be quoted as a headline result.
   snapshots, runs full retrieval plus a 200-query answer/judge sample on each dataset's strongest
   retrieval variant, uploads reproducible JSON and Markdown reports, gates against a published
   answer baseline when present, and opens a deduplicated issue on regression.
-- The first Phase 3 AWS foundation: separate Terraform bootstrap and application-state roots,
-  repository-scoped GitHub OIDC plan/apply roles, native S3 state locking, a two-AZ VPC with an
-  explicit NAT-cost mode, private RDS PostgreSQL with RDS-managed credentials, versioned encrypted
-  artifact storage, immutable ECR images, scoped ECS runtime roles, and CloudWatch log groups.
-  Infrastructure changes validate without credentials on every pull request, plan after merge to
-  protected `dev`, and apply only through the protected `production` GitHub environment. See
+- The Phase 3 AWS runtime: separate Terraform bootstrap and application-state roots,
+  repository-scoped GitHub OIDC roles, native S3 state locking, a two-AZ VPC with an explicit
+  NAT-cost mode, private RDS PostgreSQL with RDS-managed credentials, versioned encrypted artifact
+  storage, immutable ECR releases, and ECS API, worker, migration, and utility tasks behind a
+  TLS-only ALB. API and worker tasks run version-pinned ADOT sidecars that send application metrics
+  to CloudWatch and traces to X-Ray; Terraform provisions a service dashboard, alarms, and optional
+  SNS email delivery. A protected deployment workflow builds and scans the image, stages services
+  at zero, requires a successful migration, rolls out the digest, and verifies target health. See
   [`docs/aws_deployment.md`](docs/aws_deployment.md).
 
 All three real corpora are fully ingested in live PostgreSQL with ready indexes: SciFact has 5,183
@@ -216,7 +221,7 @@ invocation inserted only the remaining 39,246, and a final rerun inserted zero. 
 dense retrieval was 67 ms; reranking dominated at 3.11 s P95, well above the phase-1 600 ms target.
 
 The checked-in `fixtures/tiny-beir` corpus backs the integration tests and needs no download. The
-suite passes 171 tests along with Ruff and strict mypy. Provider calls are exercised with recorded
+suite passes 186 tests along with Ruff and strict mypy. Provider calls are exercised with recorded
 HTTP responses, so the default suite is deterministic and has no API spend. The complete core
 Compose stack has also been validated on Apple Silicon: the API and PostgreSQL report healthy, the
 migration exits successfully, the worker polls for jobs, Prometheus scrapes application metrics,
@@ -245,6 +250,11 @@ Liveness and readiness are at `http://127.0.0.1:8000/healthz` and `http://127.0.
 Validated retrieval variants, model profiles, pricing, and regression thresholds live under
 `config/`. Runtime settings use the `RAGOPS_` environment prefix; for example,
 `RAGOPS_DATABASE_URL` overrides the local PostgreSQL URL. See `.env.example` for the full set.
+
+Set `RAGOPS_API_KEY_HASHES` to a JSON array of lowercase SHA-256 digests to protect application
+routes, then send the corresponding plaintext key in `X-API-Key`. Authentication is optional in
+`local` and `test`; a production process without configured hashes fails closed on every protected
+route.
 
 ECS can inject an RDS-generated Secrets Manager document without constructing a URL in Terraform:
 set `RAGOPS_DATABASE_HOST`, `RAGOPS_DATABASE_PORT`, `RAGOPS_DATABASE_NAME`,
@@ -507,12 +517,13 @@ reference hardware. A complete answer trace should also be confirmed in the opti
 profile; OpenTelemetry spans and model/cost attributes are emitted, but that UI check requires a
 configured Langfuse project.
 
-Phase 3's AWS foundation is implemented, including remote state, OIDC, networking, ECR, private
-RDS, S3, Secrets Manager references, IAM, and log retention. The next deployment slice is ECS: API,
-worker, migration and CLI task definitions, ALB routing, ADOT sidecars, CloudWatch dashboards and
-alarms, image build/Trivy scanning, deployment rollout, and a deployed evaluation run. Before those
-tasks can be stateless, the application also needs an explicit S3 artifact hydration/publication
-contract and environment-composed RDS credentials.
+Phase 3's implementation is complete in code: remote state and OIDC, the ECS runtime, stateless S3
+artifact synchronization, component-injected RDS credentials, ADOT-to-CloudWatch/X-Ray telemetry,
+dashboard and alarms, and a migration-gated immutable deployment workflow. Its cloud acceptance
+evidence is not claimed yet. A maintainer still needs to bootstrap an AWS account, supply the ACM
+certificate and provider secret, run the protected infrastructure and release workflows, execute an
+evaluation through the deployed worker, record observed cost, and capture the CloudWatch/X-Ray
+screenshots.
 
 Final portfolio packaging remains after deployment: ADRs, model card, screenshots, release tag,
 and the external `deep-research` scoring adapter. The real-dataset CI matrix is slow the first time

@@ -8,10 +8,12 @@ from time import perf_counter
 
 from fastapi import FastAPI, Request, Response
 from opentelemetry import metrics, trace
+from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 from opentelemetry.exporter.prometheus import PrometheusMetricReader
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from opentelemetry.sdk.metrics import MeterProvider
+from opentelemetry.sdk.metrics.export import MetricReader, PeriodicExportingMetricReader
 from opentelemetry.sdk.resources import SERVICE_NAME, Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
@@ -56,12 +58,23 @@ _judge_scores = _meter.create_histogram(
 )
 
 
+def _build_metric_readers(settings: Settings) -> list[MetricReader]:
+    """Keep Prometheus local while adding OTLP push export when configured."""
+    readers: list[MetricReader] = [PrometheusMetricReader()]
+    if settings.otlp_endpoint is not None:
+        endpoint = settings.otlp_endpoint.rstrip("/")
+        readers.append(
+            PeriodicExportingMetricReader(OTLPMetricExporter(endpoint=f"{endpoint}/v1/metrics"))
+        )
+    return readers
+
+
 def configure_telemetry(settings: Settings) -> None:
     """Install the process-wide providers once.
 
-    Prometheus always reads metrics from ``/metrics``. OTLP trace export is
-    enabled only when an endpoint is configured, keeping tests and direct local
-    commands independent of the collector.
+    Prometheus always reads metrics from ``/metrics``. OTLP trace and metric
+    export are enabled only when an endpoint is configured, keeping tests and
+    direct local commands independent of the collector.
     """
     global _CONFIGURED
     with _CONFIGURE_LOCK:
@@ -78,7 +91,7 @@ def configure_telemetry(settings: Settings) -> None:
         trace.set_tracer_provider(tracer_provider)
 
         metrics.set_meter_provider(
-            MeterProvider(resource=resource, metric_readers=[PrometheusMetricReader()])
+            MeterProvider(resource=resource, metric_readers=_build_metric_readers(settings))
         )
         _CONFIGURED = True
 

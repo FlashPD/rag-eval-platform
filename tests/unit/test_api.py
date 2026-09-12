@@ -1,4 +1,5 @@
 import asyncio
+import json
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
@@ -23,6 +24,7 @@ from ragops.contracts import (
     TokenUsage,
 )
 from ragops.retrieval.errors import DatasetNotIngestedError
+from ragops.security import hash_api_key
 
 
 class FakeSearchService:
@@ -179,6 +181,63 @@ def test_search_endpoint_returns_typed_response() -> None:
 
     assert response.status_code == 200
     assert response.json()["trace_id"] == "a" * 32
+
+
+def test_production_api_fails_closed_without_configured_keys(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RAGOPS_ENVIRONMENT", "production")
+    monkeypatch.delenv("RAGOPS_API_KEY_HASHES", raising=False)
+    application = create_app(FakeSearchService())
+
+    response = asyncio.run(
+        call(
+            application,
+            "POST",
+            "/v1/search",
+            json={"query": "question", "dataset": "fixture", "variant": "bm25"},
+        )
+    )
+    health = asyncio.run(call(application, "GET", "/healthz"))
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "API authentication is not configured"}
+    assert health.status_code == 200
+
+
+def test_configured_api_key_protects_application_routes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    api_key = "test-portfolio-api-key"
+    monkeypatch.setenv("RAGOPS_ENVIRONMENT", "production")
+    monkeypatch.setenv("RAGOPS_API_KEY_HASHES", json.dumps([hash_api_key(api_key)]))
+    application = create_app(FakeSearchService())
+    body = {"query": "question", "dataset": "fixture", "variant": "bm25"}
+
+    missing = asyncio.run(call(application, "POST", "/v1/search", json=body))
+    invalid = asyncio.run(
+        call(
+            application,
+            "POST",
+            "/v1/search",
+            json=body,
+            headers={"X-API-Key": "wrong"},
+        )
+    )
+    accepted = asyncio.run(
+        call(
+            application,
+            "POST",
+            "/v1/search",
+            json=body,
+            headers={"X-API-Key": api_key},
+        )
+    )
+
+    assert missing.status_code == 401
+    assert invalid.status_code == 401
+    assert invalid.headers["WWW-Authenticate"] == "ApiKey"
+    assert accepted.status_code == 200
 
 
 def test_search_endpoint_maps_missing_dataset_to_not_found() -> None:

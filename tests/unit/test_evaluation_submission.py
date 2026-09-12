@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from ragops.config import DatasetCatalog, LocalDatasetManifest, VariantRegistry
 from ragops.contracts import (
@@ -37,16 +38,16 @@ def build_catalogs() -> tuple[DatasetCatalog, VariantRegistry]:
     return datasets, variants
 
 
-async def build_sessions() -> object:
+async def build_sessions() -> tuple[AsyncEngine, async_sessionmaker[AsyncSession]]:
     engine = create_engine("sqlite+aiosqlite:///:memory:")
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
-    return create_session_factory(engine)
+    return engine, create_session_factory(engine)
 
 
 def test_submission_queues_the_run_and_its_job_together() -> None:
     async def exercise() -> None:
-        sessions = await build_sessions()
+        engine, sessions = await build_sessions()
         datasets, variants = build_catalogs()
         spec = EvalRunSpec(dataset="fixture", variants=("bm25",), sample_size=2, seed=42)
 
@@ -73,6 +74,7 @@ def test_submission_queues_the_run_and_its_job_together() -> None:
         assert jobs[0].payload == {"run_id": str(run.id)}
         assert jobs[0].status == JobStatus.PENDING.value
         assert jobs[0].idempotency_key == f"{EVALUATION_JOB_KIND}:{run.id}"
+        await engine.dispose()
 
     asyncio.run(exercise())
 
@@ -81,7 +83,7 @@ def test_a_rejected_spec_writes_neither_a_run_nor_a_job() -> None:
     """Validation failures must not leave a queued run behind."""
 
     async def exercise() -> None:
-        sessions = await build_sessions()
+        engine, sessions = await build_sessions()
         datasets, variants = build_catalogs()
 
         with pytest.raises(KeyError):
@@ -95,13 +97,14 @@ def test_a_rejected_spec_writes_neither_a_run_nor_a_job() -> None:
         async with sessions() as session:  # type: ignore[operator]
             assert list(await session.scalars(select(EvalRunRow))) == []
             assert list(await session.scalars(select(JobRow))) == []
+        await engine.dispose()
 
     asyncio.run(exercise())
 
 
 def test_an_unknown_variant_is_rejected_before_anything_is_written() -> None:
     async def exercise() -> None:
-        sessions = await build_sessions()
+        engine, sessions = await build_sessions()
         datasets, variants = build_catalogs()
 
         with pytest.raises(KeyError):
@@ -115,5 +118,6 @@ def test_an_unknown_variant_is_rejected_before_anything_is_written() -> None:
         async with sessions() as session:  # type: ignore[operator]
             assert list(await session.scalars(select(EvalRunRow))) == []
             assert list(await session.scalars(select(JobRow))) == []
+        await engine.dispose()
 
     asyncio.run(exercise())

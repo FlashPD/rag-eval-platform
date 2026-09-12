@@ -30,6 +30,7 @@ env:
   TERRAFORM_VERSION: 1.14.6
   TF_IN_AUTOMATION: "true"
   TF_INPUT: "false"
+  TF_VAR_alarm_notification_email: ${{ vars.AWS_ALARM_NOTIFICATION_EMAIL }}
   TF_VAR_load_balancer_certificate_arn: ${{ vars.AWS_ACM_CERTIFICATE_ARN }}
 
 jobs:
@@ -89,6 +90,23 @@ jobs:
           -backend-config="bucket=${{ vars.AWS_TERRAFORM_STATE_BUCKET }}"
           -backend-config="key=${{ vars.AWS_TERRAFORM_STATE_KEY }}"
           -backend-config="region=${AWS_REGION}"
+      - name: Preserve the currently deployed release
+        working-directory: infra/aws
+        run: |
+          IMAGE_DIGEST=$(terraform output -raw deployed_image_digest 2>/dev/null || true)
+          API_DESIRED_COUNT=$(terraform output -raw configured_api_desired_count 2>/dev/null || true)
+          WORKER_DESIRED_COUNT=$(terraform output -raw configured_worker_desired_count 2>/dev/null || true)
+          {
+            if [[ "${IMAGE_DIGEST}" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+              echo "TF_VAR_application_image_digest=${IMAGE_DIGEST}"
+            fi
+            if [[ "${API_DESIRED_COUNT}" =~ ^[0-9]+$ ]]; then
+              echo "TF_VAR_api_desired_count=${API_DESIRED_COUNT}"
+            fi
+            if [[ "${WORKER_DESIRED_COUNT}" =~ ^[0-9]+$ ]]; then
+              echo "TF_VAR_worker_desired_count=${WORKER_DESIRED_COUNT}"
+            fi
+          } >> "${GITHUB_ENV}"
       - name: Plan
         working-directory: infra/aws
         run: terraform plan -no-color
@@ -99,7 +117,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: production
     concurrency:
-      group: ragops-production-infrastructure
+      group: ragops-production
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
@@ -128,6 +146,23 @@ jobs:
           -backend-config="bucket=${{ vars.AWS_TERRAFORM_STATE_BUCKET }}"
           -backend-config="key=${{ vars.AWS_TERRAFORM_STATE_KEY }}"
           -backend-config="region=${AWS_REGION}"
+      - name: Preserve the currently deployed release
+        working-directory: infra/aws
+        run: |
+          IMAGE_DIGEST=$(terraform output -raw deployed_image_digest 2>/dev/null || true)
+          API_DESIRED_COUNT=$(terraform output -raw configured_api_desired_count 2>/dev/null || true)
+          WORKER_DESIRED_COUNT=$(terraform output -raw configured_worker_desired_count 2>/dev/null || true)
+          {
+            if [[ "${IMAGE_DIGEST}" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+              echo "TF_VAR_application_image_digest=${IMAGE_DIGEST}"
+            fi
+            if [[ "${API_DESIRED_COUNT}" =~ ^[0-9]+$ ]]; then
+              echo "TF_VAR_api_desired_count=${API_DESIRED_COUNT}"
+            fi
+            if [[ "${WORKER_DESIRED_COUNT}" =~ ^[0-9]+$ ]]; then
+              echo "TF_VAR_worker_desired_count=${WORKER_DESIRED_COUNT}"
+            fi
+          } >> "${GITHUB_ENV}"
       - name: Plan
         if: inputs.operation == 'plan'
         working-directory: infra/aws

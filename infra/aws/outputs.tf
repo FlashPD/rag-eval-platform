@@ -8,6 +8,21 @@ output "ecr_repository_url" {
   value       = aws_ecr_repository.application.repository_url
 }
 
+output "deployed_image_digest" {
+  description = "Immutable digest currently represented by Terraform state; null before the first release."
+  value       = var.application_image_digest
+}
+
+output "configured_api_desired_count" {
+  description = "API count last applied with the release, including a migration-failure zero state."
+  value       = var.api_desired_count
+}
+
+output "configured_worker_desired_count" {
+  description = "Worker count last applied with the release, including a migration-failure zero state."
+  value       = var.worker_desired_count
+}
+
 output "database_endpoint" {
   description = "Private RDS endpoint consumed by ECS task definitions."
   value       = aws_db_instance.this.address
@@ -21,6 +36,11 @@ output "database_master_secret_arn" {
 output "openai_api_key_secret_arn" {
   description = "Populate this secret out of band before enabling answer generation."
   value       = aws_secretsmanager_secret.openai_api_key.arn
+}
+
+output "api_key_hashes_secret_arn" {
+  description = "Populate with a JSON array of SHA-256 key hashes before starting the public API."
+  value       = aws_secretsmanager_secret.api_key_hashes.arn
 }
 
 output "application_subnet_ids" {
@@ -63,6 +83,11 @@ output "worker_service_name" {
   value = aws_ecs_service.worker.name
 }
 
+output "api_target_group_arn" {
+  description = "Target group checked after an API deployment completes."
+  value       = aws_lb_target_group.api.arn
+}
+
 output "migration_task_definition_arn" {
   value = aws_ecs_task_definition.migration.arn
 }
@@ -87,4 +112,14 @@ output "ecs_network_configuration_json" {
 output "application_url" {
   description = "Public HTTPS endpoint. Use a DNS alias matching the configured ACM certificate."
   value       = "https://${aws_lb.api.dns_name}"
+}
+
+output "cloudwatch_dashboard_name" {
+  description = "Operational dashboard for the deployed service."
+  value       = aws_cloudwatch_dashboard.service.dashboard_name
+}
+
+output "alarm_topic_arn" {
+  description = "SNS topic receiving CloudWatch alarm state changes."
+  value       = aws_sns_topic.operations.arn
 }
