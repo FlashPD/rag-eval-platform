@@ -216,7 +216,7 @@ invocation inserted only the remaining 39,246, and a final rerun inserted zero. 
 dense retrieval was 67 ms; reranking dominated at 3.11 s P95, well above the phase-1 600 ms target.
 
 The checked-in `fixtures/tiny-beir` corpus backs the integration tests and needs no download. The
-suite passes 169 tests along with Ruff and strict mypy. Provider calls are exercised with recorded
+suite passes 171 tests along with Ruff and strict mypy. Provider calls are exercised with recorded
 HTTP responses, so the default suite is deterministic and has no API spend. The complete core
 Compose stack has also been validated on Apple Silicon: the API and PostgreSQL report healthy, the
 migration exits successfully, the worker polls for jobs, Prometheus scrapes application metrics,

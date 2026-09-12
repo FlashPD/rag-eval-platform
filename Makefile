@@ -1,4 +1,4 @@
-.PHONY: install format lint typecheck test check run eval-run db-upgrade db-downgrade stack-up stack-up-full stack-down stack-logs infra-fmt infra-validate
+.PHONY: install format lint typecheck test check run eval-run db-upgrade db-downgrade stack-up stack-up-full stack-down stack-logs infra-fmt infra-validate terraform-check
 
 PYTHON := .venv/bin/python
 RAGOPS := .venv/bin/ragops

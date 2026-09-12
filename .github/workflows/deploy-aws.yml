@@ -1,0 +1,165 @@
+name: Deploy AWS
+
+on:
+  workflow_dispatch:
+    inputs:
+      enable_generation:
+        description: Inject the previously populated OpenAI secret
+        required: true
+        default: false
+        type: boolean
+      enable_artifact_sync:
+        description: Sync the S3 runtime prefix before each task starts
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: ragops-production-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: production
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY || 'ragops' }}
+      TF_IN_AUTOMATION: "true"
+      TF_VAR_aws_region: ${{ vars.AWS_REGION }}
+      TF_VAR_image_tag: ${{ github.sha }}
+      TF_VAR_allowed_ingress_cidrs: ${{ vars.AWS_ALLOWED_INGRESS_CIDRS }}
+      TF_VAR_enable_generation: ${{ inputs.enable_generation }}
+      TF_VAR_enable_artifact_sync: ${{ inputs.enable_artifact_sync }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure short-lived AWS credentials
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Sign in to ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Check for an existing immutable image
+        id: image
+        run: |
+          if aws ecr describe-images \
+            --repository-name "${ECR_REPOSITORY}" \
+            --image-ids "imageTag=${GITHUB_SHA}" >/dev/null 2>&1; then
+            echo "exists=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "exists=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Build immutable application image
+        if: steps.image.outputs.exists != 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          platforms: linux/amd64
+          tags: ${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Fail on high or critical image vulnerabilities
+        if: steps.image.outputs.exists != 'true'
+        uses: aquasecurity/trivy-action@0.33.1
+        with:
+          image-ref: ${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
+          format: table
+          ignore-unfixed: true
+          severity: CRITICAL,HIGH
+          exit-code: "1"
+
+      - name: Push scanned image
+        if: steps.image.outputs.exists != 'true'
+        run: docker push "${{ steps.ecr.outputs.registry }}/${ECR_REPOSITORY}:${GITHUB_SHA}"
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.13.5
+          terraform_wrapper: false
+
+      - name: Initialize remote state
+        working-directory: infra/aws
+        run: >-
+          terraform init -input=false
+          -backend-config="bucket=${{ vars.TERRAFORM_STATE_BUCKET }}"
+          -backend-config="key=ragops/production.tfstate"
+          -backend-config="region=${AWS_REGION}"
+
+      - name: Plan infrastructure
+        working-directory: infra/aws
+        run: terraform plan -input=false -out=deployment.tfplan
+
+      - name: Apply infrastructure
+        working-directory: infra/aws
+        run: terraform apply -input=false -auto-approve deployment.tfplan
+
+      - name: Run database migrations as a one-off task
+        id: migrate
+        working-directory: infra/aws
+        shell: bash
+        run: |
+          CLUSTER=$(terraform output -raw ecs_cluster_name)
+          TASK_DEFINITION=$(terraform output -raw migration_task_definition_arn)
+          SUBNETS=$(terraform output -json application_subnet_ids | jq -r 'join(",")')
+          SECURITY_GROUP=$(terraform output -raw application_security_group_id)
+          PUBLIC_IP=$(terraform output -raw assign_public_ip)
+          if [[ "${PUBLIC_IP}" == "true" ]]; then
+            ASSIGN_PUBLIC_IP=ENABLED
+          else
+            ASSIGN_PUBLIC_IP=DISABLED
+          fi
+          TASK_ARN=$(aws ecs run-task \
+            --cluster "${CLUSTER}" \
+            --task-definition "${TASK_DEFINITION}" \
+            --launch-type FARGATE \
+            --network-configuration "awsvpcConfiguration={subnets=[${SUBNETS}],securityGroups=[${SECURITY_GROUP}],assignPublicIp=${ASSIGN_PUBLIC_IP}}" \
+            --query 'tasks[0].taskArn' \
+            --output text)
+          test -n "${TASK_ARN}" && test "${TASK_ARN}" != "None"
+          aws ecs wait tasks-stopped --cluster "${CLUSTER}" --tasks "${TASK_ARN}"
+          EXIT_CODE=$(aws ecs describe-tasks \
+            --cluster "${CLUSTER}" \
+            --tasks "${TASK_ARN}" \
+            --query "tasks[0].containers[?name=='migration'].exitCode | [0]" \
+            --output text)
+          if [[ "${EXIT_CODE}" != "0" ]]; then
+            aws ecs describe-tasks --cluster "${CLUSTER}" --tasks "${TASK_ARN}"
+            exit 1
+          fi
+
+      - name: Roll services onto the migrated release
+        working-directory: infra/aws
+        run: |
+          CLUSTER=$(terraform output -raw ecs_cluster_name)
+          API_SERVICE=$(terraform output -raw api_service_name)
+          WORKER_SERVICE=$(terraform output -raw worker_service_name)
+          aws ecs update-service --cluster "${CLUSTER}" --service "${API_SERVICE}" --force-new-deployment >/dev/null
+          aws ecs update-service --cluster "${CLUSTER}" --service "${WORKER_SERVICE}" --force-new-deployment >/dev/null
+          aws ecs wait services-stable --cluster "${CLUSTER}" --services "${API_SERVICE}" "${WORKER_SERVICE}"
+
+      - name: Verify healthy load-balancer targets
+        working-directory: infra/aws
+        run: aws elbv2 wait target-in-service --target-group-arn "$(terraform output -raw api_target_group_arn)"
+
+      - name: Publish deployment summary
+        working-directory: infra/aws
+        run: |
+          echo "### AWS deployment" >> "${GITHUB_STEP_SUMMARY}"
+          echo "- Image: \`${GITHUB_SHA}\`" >> "${GITHUB_STEP_SUMMARY}"
+          echo "- URL: $(terraform output -raw application_url)" >> "${GITHUB_STEP_SUMMARY}"
+          echo "- Dashboard: $(terraform output -raw cloudwatch_dashboard_name)" >> "${GITHUB_STEP_SUMMARY}"

@@ -9,7 +9,11 @@ from typing import Annotated, Any, Literal
 import yaml
 from pydantic import Field, PositiveFloat, PositiveInt, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+<<<<<<< Updated upstream
 from sqlalchemy import URL
+=======
+from sqlalchemy.engine import URL
+>>>>>>> Stashed changes
 
 from ragops.contracts.base import Contract
 from ragops.contracts.retrieval import VariantConfig
@@ -26,12 +30,20 @@ class Settings(BaseSettings):
 
     environment: Literal["local", "test", "production"] = "local"
     database_url: str = "postgresql+asyncpg://ragops:ragops@localhost:5432/ragops"
+<<<<<<< Updated upstream
     database_host: str | None = Field(default=None, min_length=1)
     database_port: int = Field(default=5432, ge=1, le=65_535)
     database_name: str = Field(default="ragops", min_length=1)
     database_user: str | None = Field(default=None, min_length=1)
     database_password: SecretStr | None = None
     database_require_ssl: bool = True
+=======
+    database_host: str | None = None
+    database_port: PositiveInt = 5432
+    database_name: str = "ragops"
+    database_user: str = "ragops"
+    database_password: SecretStr | None = None
+>>>>>>> Stashed changes
     configuration_directory: Path = Path("config")
     artifact_directory: Path = Path("artifacts")
     artifact_bucket: str | None = Field(default=None, min_length=3)
@@ -49,6 +61,7 @@ class Settings(BaseSettings):
     online_evaluation_sample_rate: float = Field(default=0.05, ge=0, le=1)
 
     @model_validator(mode="after")
+<<<<<<< Updated upstream
     def compose_database_url(self) -> "Settings":
         """Build an asyncpg URL from independently injected RDS secret fields."""
         component_fields = {
@@ -82,12 +95,32 @@ class Settings(BaseSettings):
         query = {"ssl": "require"} if self.database_require_ssl else {}
         self.database_url = URL.create(
             "postgresql+asyncpg",
+=======
+    def assemble_database_url(self) -> "Settings":
+        """Build a safely escaped URL from ECS-friendly database settings.
+
+        ECS can inject one JSON key from the RDS-managed Secrets Manager secret,
+        but it cannot interpolate that password into a URL. Local development and
+        CI can continue to set ``RAGOPS_DATABASE_URL`` directly; a configured host
+        selects the component form used by the deployed tasks.
+        """
+        if self.database_host is None:
+            return self
+        if self.database_password is None:
+            raise ValueError("database_password is required when database_host is configured")
+
+        self.database_url = URL.create(
+            drivername="postgresql+asyncpg",
+>>>>>>> Stashed changes
             username=self.database_user,
             password=self.database_password.get_secret_value(),
             host=self.database_host,
             port=self.database_port,
             database=self.database_name,
+<<<<<<< Updated upstream
             query=query,
+=======
+>>>>>>> Stashed changes
         ).render_as_string(hide_password=False)
         return self
 

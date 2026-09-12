@@ -79,6 +79,7 @@ def test_settings_use_ragops_environment_prefix(monkeypatch: pytest.MonkeyPatch)
     assert settings.model_cache_directory == Path("tmp/model-cache")
 
 
+<<<<<<< Updated upstream
 def test_settings_compose_an_ssl_rds_url_from_secret_fields(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -113,3 +114,28 @@ def test_settings_reject_a_url_mixed_with_database_components() -> None:
             database_user="application",
             database_password="secret",
         )
+=======
+def test_settings_build_database_url_from_secret_components(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RAGOPS_DATABASE_HOST", "database.internal")
+    monkeypatch.setenv("RAGOPS_DATABASE_PORT", "5433")
+    monkeypatch.setenv("RAGOPS_DATABASE_NAME", "evaluation")
+    monkeypatch.setenv("RAGOPS_DATABASE_USER", "service")
+    monkeypatch.setenv("RAGOPS_DATABASE_PASSWORD", "p@ss:/word")
+
+    settings = Settings()
+
+    assert settings.database_url == (
+        "postgresql+asyncpg://service:p%40ss%3A%2Fword@database.internal:5433/evaluation"
+    )
+    assert "p@ss:/word" not in repr(settings)
+
+
+def test_settings_require_password_with_database_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("RAGOPS_DATABASE_HOST", "database.internal")
+    monkeypatch.delenv("RAGOPS_DATABASE_PASSWORD", raising=False)
+
+    with pytest.raises(ValidationError, match="database_password is required"):
+        Settings()
+>>>>>>> Stashed changes

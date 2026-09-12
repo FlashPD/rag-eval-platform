@@ -10,6 +10,30 @@ permissions:
   contents: read
 
 jobs:
+  terraform:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      matrix:
+        directory: [infra/bootstrap, infra/aws]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.13.5
+      - name: Check formatting
+        run: terraform fmt -check -recursive
+      - name: Initialize without remote state
+        working-directory: ${{ matrix.directory }}
+        run: terraform init -backend=false -input=false
+      - name: Validate configuration
+        working-directory: ${{ matrix.directory }}
+        run: terraform validate
+      - name: Exercise infrastructure plans with a mocked provider
+        if: matrix.directory == 'infra/aws'
+        working-directory: infra/aws
+        run: terraform test
+
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 10

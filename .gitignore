@@ -33,3 +33,15 @@ dist/
 .DS_Store
 .idea/
 .vscode/
+
+# Terraform local state and generated plans. Provider lock files are committed.
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
