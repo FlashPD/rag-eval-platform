@@ -1,5 +1,10 @@
 # AWS deployment
 
+> **Paid opt-in:** the default [portfolio mode](portfolio_mode.md) creates no AWS resources and
+> needs no domain. Continue with this guide only for the production-style cloud demonstration.
+> Set the GitHub repository variable `PORTFOLIO_MODE=false` before running an AWS plan, apply, or
+> release. The workflows refuse paid deployment while that variable is unset or `true`.
+
 Phase 3 deploys ragops to ECS on Fargate with private RDS PostgreSQL, versioned S3 artifacts, ECR,
 Secrets Manager, CloudWatch, and X-Ray. Infrastructure is split into two Terraform roots:
 
@@ -26,7 +31,7 @@ the TLS listener.
 - Pull requests receive no AWS credentials. After review, pushes to protected `dev` can assume a
   read-only plan role. Applies use the protected `production` GitHub environment, whose OIDC
   subject is distinct and should require manual approval.
-- `nat_gateway_mode = "none"` is the destroyable portfolio default. ECS tasks will run in public
+- `nat_gateway_mode = "none"` is the destroyable AWS-demo default. ECS tasks will run in public
   subnets with restrictive security groups while RDS remains private. `single` keeps tasks private
   with one NAT gateway; `per_az` removes that single-AZ egress dependency at higher hourly cost.
 - RDS deletion protection and Multi-AZ are configurable. Enable both for a persistent environment;
@@ -65,6 +70,16 @@ The trust policies bind the plan role to this repository's `dev` branch and the 
 protected environment. No AWS access keys are stored in GitHub.
 
 ## Plan and apply
+
+Set the explicit paid-deployment opt-in before using this section:
+
+```text
+PORTFOLIO_MODE=false
+```
+
+The **AWS infrastructure** workflow defaults to its `portfolio` operation, which validates the
+configuration but does not request AWS credentials or create resources. Select `plan` or `apply`
+only after changing the repository variable above.
 
 For a local plan, initialize the partial backend with the bucket printed above:
 

@@ -49,7 +49,7 @@ variable "nat_gateway_mode" {
 }
 
 variable "database_instance_class" {
-  description = "RDS instance class; ARM burstable is the cost-conscious portfolio default."
+  description = "RDS instance class; ARM burstable is the cost-conscious AWS-demo default."
   type        = string
   default     = "db.t4g.micro"
 }
@@ -89,7 +89,7 @@ variable "database_deletion_protection" {
 }
 
 variable "database_skip_final_snapshot" {
-  description = "Skip the final RDS snapshot on destroy. False is safer; true lowers teardown friction."
+  description = "Skip the final RDS snapshot on destroy. False is safer; true lowers AWS-demo teardown friction."
   type        = bool
   default     = true
 }

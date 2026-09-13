@@ -140,7 +140,7 @@ resource "aws_ecs_cluster_capacity_providers" "this" {
   }
 }
 
-# Public reachability is intentional for the portfolio API; security groups
+# Public reachability is intentional for the production-style AWS API; security groups
 # restrict the ALB to web ingress and tasks accept traffic only from this ALB.
 #trivy:ignore:AVD-AWS-0053
 resource "aws_lb" "api" {

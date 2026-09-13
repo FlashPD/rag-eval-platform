@@ -5,7 +5,6 @@ on:
 
 permissions:
   contents: read
-  id-token: write
 
 env:
   AWS_REGION: us-east-1
@@ -16,10 +15,28 @@ env:
   TF_VAR_load_balancer_certificate_arn: ${{ vars.AWS_ACM_CERTIFICATE_ARN }}
 
 jobs:
+  portfolio-mode:
+    if: vars.PORTFOLIO_MODE != 'false'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Explain why AWS deployment is disabled
+        run: |
+          {
+            echo "### AWS deployment disabled"
+            echo
+            echo "Portfolio mode creates no AWS resources and is the safe default."
+            echo "Run **Publish portfolio evaluation** to generate a GitHub-hosted report."
+            echo "Set the repository variable \`PORTFOLIO_MODE=false\` to opt in to AWS."
+          } >> "${GITHUB_STEP_SUMMARY}"
+
   deploy:
+    if: vars.PORTFOLIO_MODE == 'false'
     runs-on: ubuntu-latest
     timeout-minutes: 90
     environment: production
+    permissions:
+      contents: read
+      id-token: write
     concurrency:
       group: ragops-production
       cancel-in-progress: false

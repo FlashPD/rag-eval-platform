@@ -173,7 +173,7 @@ resource "aws_vpc_security_group_ingress_rule" "application_load_balancer" {
 
 # ragops calls several public providers without stable IP ranges. Routing, task
 # IAM, and TLS constrain this traffic; a domain proxy is disproportionate for
-# the portfolio deployment.
+# the optional production-style AWS demonstration.
 #trivy:ignore:AVD-AWS-0104
 resource "aws_vpc_security_group_egress_rule" "application_https" {
   security_group_id = aws_security_group.application.id

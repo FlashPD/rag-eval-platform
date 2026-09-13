@@ -11,6 +11,7 @@ permissions:
 
 jobs:
   full-evaluation:
+    if: github.event_name == 'workflow_dispatch' || vars.PORTFOLIO_MODE == 'false'
     runs-on: ubuntu-latest
     timeout-minutes: 360
     strategy:

@@ -7,6 +7,17 @@ build when quality drops.
 
 The product is the measurement, not the search.
 
+## Zero-cost portfolio mode
+
+The default portfolio path runs a retrieval evaluation in GitHub Actions, publishes the Markdown
+and JSON report through a pull request, and uses no AWS credentials or resources. It needs no
+domain, certificate, continuously running API, RDS database, or OpenAI key. Run **Publish portfolio
+evaluation** from the Actions tab and start with SciFact at 50 queries. See the
+[portfolio-mode guide](docs/portfolio_mode.md) for the one-time GitHub settings and cost guards.
+
+The production-style ECS/RDS deployment remains available as an explicit opt-in. Its workflows are
+blocked until the repository variable `PORTFOLIO_MODE` is set to `false`.
+
 ## Results
 
 All test queries in three BEIR domains, using `BAAI/bge-small-en-v1.5` embeddings and
@@ -517,10 +528,12 @@ reference hardware. A complete answer trace should also be confirmed in the opti
 profile; OpenTelemetry spans and model/cost attributes are emitted, but that UI check requires a
 configured Langfuse project.
 
-Phase 3's implementation is complete in code: remote state and OIDC, the ECS runtime, stateless S3
+Phase 3's production implementation is complete in code: remote state and OIDC, the ECS runtime, stateless S3
 artifact synchronization, component-injected RDS credentials, ADOT-to-CloudWatch/X-Ray telemetry,
 dashboard and alarms, and a migration-gated immutable deployment workflow. Its cloud acceptance
-evidence is not claimed yet. A maintainer still needs to bootstrap an AWS account, supply the ACM
+evidence is not claimed yet. Full AWS deployment is an explicit, paid opt-in; portfolio mode uses
+GitHub-hosted retrieval evaluations and committed reports instead. A maintainer who wants the full
+cloud demonstration still needs to bootstrap an AWS account, supply the ACM
 certificate and provider secret, run the protected infrastructure and release workflows, execute an
 evaluation through the deployed worker, record observed cost, and capture the CloudWatch/X-Ray
 screenshots.

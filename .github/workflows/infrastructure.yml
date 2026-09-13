@@ -13,17 +13,17 @@ on:
   workflow_dispatch:
     inputs:
       operation:
-        description: "Plan or apply the production infrastructure"
+        description: "Portfolio mode is free; AWS plan/apply requires PORTFOLIO_MODE=false"
         required: true
-        default: plan
+        default: portfolio
         type: choice
         options:
+          - portfolio
           - plan
           - apply
 
 permissions:
   contents: read
-  id-token: write
 
 env:
   AWS_REGION: us-east-1
@@ -68,12 +68,16 @@ jobs:
   dev-plan:
     if: >-
       github.event_name == 'push' &&
+      vars.PORTFOLIO_MODE == 'false' &&
       vars.AWS_TERRAFORM_PLAN_ROLE_ARN != '' &&
       vars.AWS_TERRAFORM_STATE_BUCKET != '' &&
       vars.AWS_TERRAFORM_STATE_KEY != '' &&
       vars.AWS_ACM_CERTIFICATE_ARN != ''
     needs: validate
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v7
       - uses: hashicorp/setup-terraform@v4
@@ -112,10 +116,16 @@ jobs:
         run: terraform plan -no-color
 
   protected-plan-or-apply:
-    if: github.event_name == 'workflow_dispatch'
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.operation != 'portfolio' &&
+      vars.PORTFOLIO_MODE == 'false'
     needs: validate
     runs-on: ubuntu-latest
     environment: production
+    permissions:
+      contents: read
+      id-token: write
     concurrency:
       group: ragops-production
       cancel-in-progress: false
@@ -171,3 +181,33 @@ jobs:
         if: inputs.operation == 'apply'
         working-directory: infra/aws
         run: terraform apply -auto-approve
+
+  portfolio-mode:
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.operation == 'portfolio'
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Confirm zero-AWS portfolio mode
+        run: |
+          {
+            echo "### Portfolio mode"
+            echo
+            echo "No AWS credentials were requested and no AWS resources were created."
+            echo "Run the **Publish portfolio evaluation** workflow to generate a report."
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+  aws-opt-in-required:
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.operation != 'portfolio' &&
+      vars.PORTFOLIO_MODE != 'false'
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Refuse an accidental paid deployment
+        run: |
+          echo "AWS deployment is disabled while PORTFOLIO_MODE is unset or true." >&2
+          echo "Set the repository variable PORTFOLIO_MODE=false to explicitly enable it." >&2
+          exit 1
