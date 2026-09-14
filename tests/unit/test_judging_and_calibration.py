@@ -2,6 +2,8 @@ import asyncio
 from decimal import Decimal
 from pathlib import Path
 
+import pytest
+
 from ragops.contracts import (
     CalibrationLabel,
     JudgeClaimVerdict,
@@ -16,7 +18,8 @@ from ragops.evaluation.calibration import (
     render_calibration_markdown,
     run_calibration,
 )
-from ragops.evaluation.judging import CachingJudge, VersionedJudgePromptRenderer
+from ragops.evaluation.judging import CachingJudge, RepairingJudge, VersionedJudgePromptRenderer
+from ragops.generation import GenerationProviderError, GenerationSchemaError
 
 PROMPT_ROOT = Path(__file__).parents[2] / "prompts" / "judge"
 
@@ -77,6 +80,21 @@ class FakeJudge:
         return self.result.model_copy(update={"rendered_prompt_hash": request.rendered_prompt_hash})
 
 
+class SequencedJudge(FakeJudge):
+    def __init__(self, responses: list[JudgeVerdict | BaseException]) -> None:
+        super().__init__(verdict())
+        self.responses = responses
+        self.requests: list[JudgeRequest] = []
+
+    async def judge(self, request: JudgeRequest) -> JudgeVerdict:
+        self.calls += 1
+        self.requests.append(request)
+        response = self.responses.pop(0)
+        if isinstance(response, BaseException):
+            raise response
+        return response.model_copy(update={"rendered_prompt_hash": request.rendered_prompt_hash})
+
+
 def test_judge_renderer_escapes_untrusted_query_answer_and_context() -> None:
     renderer = VersionedJudgePromptRenderer(prompt_root=PROMPT_ROOT)
     request = renderer.render_values(
@@ -116,6 +134,55 @@ def test_judge_cache_avoids_a_second_billable_call() -> None:
         assert second.usage == TokenUsage(input_tokens=0, output_tokens=0)
 
     asyncio.run(exercise())
+
+
+def test_schema_failure_gets_one_concise_repair_attempt_with_combined_usage() -> None:
+    request = VersionedJudgePromptRenderer(prompt_root=PROMPT_ROOT).render_values(
+        query="Question",
+        answer="Answer [1].",
+        abstained=False,
+        citations=("[1]",),
+        contexts=(passage(),),
+        trace_id="trace-1",
+    )
+    delegate = SequencedJudge(
+        [
+            GenerationSchemaError(
+                "incomplete",
+                usage=TokenUsage(
+                    input_tokens=10,
+                    output_tokens=3,
+                    cost_usd=Decimal("0.01"),
+                ),
+            ),
+            verdict(),
+        ]
+    )
+
+    repaired = asyncio.run(RepairingJudge(delegate).judge(request))
+
+    assert delegate.calls == 2
+    assert "repair_instruction" in delegate.requests[1].user_prompt
+    assert repaired.rendered_prompt_hash == request.rendered_prompt_hash
+    assert repaired.usage.input_tokens == 20
+    assert repaired.usage.output_tokens == 5
+    assert repaired.usage.cost_usd == Decimal("0.011")
+
+
+def test_judge_repair_does_not_retry_provider_failures() -> None:
+    request = VersionedJudgePromptRenderer(prompt_root=PROMPT_ROOT).render_values(
+        query="Question",
+        answer="Answer [1].",
+        abstained=False,
+        citations=("[1]",),
+        contexts=(passage(),),
+        trace_id="trace-1",
+    )
+    delegate = SequencedJudge([GenerationProviderError("unavailable")])
+
+    with pytest.raises(GenerationProviderError, match="unavailable"):
+        asyncio.run(RepairingJudge(delegate).judge(request))
+    assert delegate.calls == 1
 
 
 def test_calibration_computes_kappa_and_runs_each_profile() -> None:

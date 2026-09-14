@@ -5,7 +5,12 @@ from pathlib import Path
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ragops.config import ConfigBundle, Settings
-from ragops.evaluation.judging import CachingJudge, OpenAIJudge, VersionedJudgePromptRenderer
+from ragops.evaluation.judging import (
+    CachingJudge,
+    OpenAIJudge,
+    RepairingJudge,
+    VersionedJudgePromptRenderer,
+)
 from ragops.persistence import SqlAlchemyJudgeCache
 from ragops.protocols import Judge
 
@@ -29,12 +34,14 @@ def build_judges(
         if profile.provider != "openai":
             continue
         judges[name] = CachingJudge(
-            judge=OpenAIJudge(
-                profile=profile,
-                pricing=bundle.pricing,
-                prompt_version=prompt_version,
-                api_key=settings.openai_api_key.get_secret_value(),
-                timeout_seconds=settings.generation_timeout_seconds,
+            judge=RepairingJudge(
+                OpenAIJudge(
+                    profile=profile,
+                    pricing=bundle.pricing,
+                    prompt_version=prompt_version,
+                    api_key=settings.openai_api_key.get_secret_value(),
+                    timeout_seconds=settings.generation_timeout_seconds,
+                )
             ),
             cache=cache,
         )

@@ -26,6 +26,7 @@ from ragops.contracts import (
     TokenUsage,
 )
 from ragops.generation.errors import (
+    GenerationFailure,
     GenerationProviderError,
     GenerationRefusalError,
     GenerationSchemaError,
@@ -259,6 +260,51 @@ def build_judge_cache_key(judge: Judge, request: JudgeRequest) -> str:
         separators=(",", ":"),
     )
     return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def _combined_usage(first: TokenUsage, second: TokenUsage) -> TokenUsage:
+    return TokenUsage(
+        input_tokens=first.input_tokens + second.input_tokens,
+        output_tokens=first.output_tokens + second.output_tokens,
+        cached_input_tokens=first.cached_input_tokens + second.cached_input_tokens,
+        cache_write_input_tokens=(first.cache_write_input_tokens + second.cache_write_input_tokens),
+        cost_usd=first.cost_usd + second.cost_usd,
+    )
+
+
+class RepairingJudge:
+    """Retry one incomplete or invalid structured verdict with a concise-output hint."""
+
+    def __init__(self, judge: Judge) -> None:
+        self._judge = judge
+        self.provider = judge.provider
+        self.model = judge.model
+        self.configuration_hash = judge.configuration_hash
+        self.prompt_version = judge.prompt_version
+
+    async def judge(self, request: JudgeRequest) -> JudgeVerdict:
+        try:
+            return await self._judge.judge(request)
+        except GenerationSchemaError as first_error:
+            repair_request = request.model_copy(
+                update={
+                    "user_prompt": request.user_prompt
+                    + "\n\n<repair_instruction>Return one complete value matching the requested "
+                    "schema. Keep every claim brief and the rationale to one short sentence. Do "
+                    "not add prose outside the schema.</repair_instruction>"
+                }
+            )
+            try:
+                repaired = await self._judge.judge(repair_request)
+            except GenerationFailure as second_error:
+                second_error.usage = _combined_usage(first_error.usage, second_error.usage)
+                raise
+            return repaired.model_copy(
+                update={
+                    "rendered_prompt_hash": request.rendered_prompt_hash,
+                    "usage": _combined_usage(first_error.usage, repaired.usage),
+                }
+            )
 
 
 class CachingJudge:
