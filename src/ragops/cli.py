@@ -190,7 +190,7 @@ async def _run_evaluation(arguments: argparse.Namespace) -> int:
         judge_profiles=(arguments.judge_profiles or ()) if arguments.generation else (),
         generation_prompt_version=(
             arguments.generation_prompt_version
-            or ("scifact-v1" if arguments.dataset == "scifact" else "answer-v1")
+            or ("scifact-v2" if arguments.dataset == "scifact" else "answer-v1")
             if arguments.generation
             else None
         ),

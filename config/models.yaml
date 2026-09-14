@@ -13,8 +13,8 @@ models:
     default:
       provider: openai
       model: gpt-5.4-mini-2026-03-17
-      effort: medium
-      max_tokens: 1024
+      effort: low
+      max_tokens: 2048
     budget:
       provider: openai
       model: gpt-5.4-mini-2026-03-17

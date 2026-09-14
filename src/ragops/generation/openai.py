@@ -40,12 +40,26 @@ class OpenAICitedAnswer(Contract):
     which is normalized back into the provider-neutral ``CitedAnswer`` contract.
     """
 
-    answer: str = Field(min_length=1, max_length=32_768)
-    citations: tuple[str, ...] = ()
-    abstained: bool
+    answer: str = Field(
+        min_length=1,
+        max_length=32_768,
+        description="Answer text; every listed citation ID must also appear inline here.",
+    )
+    citations: tuple[str, ...] = Field(
+        default=(),
+        description="Unique cited local IDs, or an empty list when abstained is true.",
+    )
+    abstained: bool = Field(
+        description="True only when the supplied passages do not establish an answer."
+    )
     confidence: Confidence
     verification_label: SciFactLabel | None = None
-    rationale_sentences: tuple[RationaleSentenceSelection, ...] = ()
+    rationale_sentences: tuple[RationaleSentenceSelection, ...] = Field(
+        default=(),
+        description=(
+            "Cited local IDs and zero-based supporting sentence indices; empty on abstention."
+        ),
+    )
 
 
 class OpenAIGenerator:

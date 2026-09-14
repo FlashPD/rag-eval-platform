@@ -89,7 +89,7 @@ def build_evaluation_answer_service(
         prompt_version="answer-v1",
         enable_online_sampling=False,
     )
-    scifact = build_answer_service(
+    scifact_v1 = build_answer_service(
         bundle,
         sessions,
         search=search,
@@ -97,8 +97,20 @@ def build_evaluation_answer_service(
         prompt_version="scifact-v1",
         enable_online_sampling=False,
     )
+    scifact_v2 = build_answer_service(
+        bundle,
+        sessions,
+        search=search,
+        settings=settings,
+        prompt_version="scifact-v2",
+        enable_online_sampling=False,
+    )
     return DatasetRoutingAnswerService(
         default=default,
-        by_dataset={"scifact": scifact},
-        by_prompt_version={"answer-v1": default, "scifact-v1": scifact},
+        by_dataset={"scifact": scifact_v2},
+        by_prompt_version={
+            "answer-v1": default,
+            "scifact-v1": scifact_v1,
+            "scifact-v2": scifact_v2,
+        },
     )
