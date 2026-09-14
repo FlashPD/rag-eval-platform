@@ -12,6 +12,7 @@ from ragops.contracts import (
     EvalRun,
     EvalRunState,
     EvaluationQuery,
+    GenerationOutcome,
     QueryResult,
     SearchRequest,
 )
@@ -242,6 +243,12 @@ class RetrievalEvaluationRunner:
                     result = persisted[(query.external_id, variant_name)]
                     if result.answer is None:
                         raise ValueError("judge stage found a missing generated answer")
+                    if result.answer.outcome not in {
+                        GenerationOutcome.OK,
+                        GenerationOutcome.ABSTAINED,
+                        GenerationOutcome.CITATION_ERROR,
+                    }:
+                        continue
                     missing_profiles = [
                         profile
                         for profile in run.spec.judge_profiles

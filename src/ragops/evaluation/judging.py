@@ -200,8 +200,13 @@ class OpenAIJudge:
                             provider_request_id=response.id,
                         )
         if response.status != "completed" or response.output_parsed is None:
+            reason = (
+                response.incomplete_details.reason
+                if response.incomplete_details is not None
+                else response.status
+            )
             raise GenerationSchemaError(
-                "OpenAI did not return a complete parsed judge verdict",
+                f"OpenAI did not return a complete parsed judge verdict: {reason}",
                 usage=usage,
                 provider_request_id=response.id,
             )

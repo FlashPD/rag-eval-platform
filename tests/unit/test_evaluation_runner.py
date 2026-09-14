@@ -109,6 +109,38 @@ class FakeAnswerService:
         )
 
 
+class FailingAnswerService:
+    async def answer(self, request: AnswerRequest) -> AnswerResponse:
+        del request
+        return AnswerResponse(
+            answer="",
+            citations=(),
+            abstained=False,
+            confidence=Confidence.LOW,
+            contexts=(),
+            usage=TokenUsage(input_tokens=0, output_tokens=0),
+            outcome=GenerationOutcome.PROVIDER_ERROR,
+            trace_id="failed-answer",
+            provider="openai",
+            model="test-model",
+            generator_configuration_hash="a" * 64,
+            prompt_version="answer-v1",
+            rendered_prompt_hash="b" * 64,
+            error="provider rejected the structured-output schema",
+        )
+
+
+class UnexpectedJudge:
+    provider = "openai"
+    model = "test-judge"
+    configuration_hash = "c" * 64
+    prompt_version = "judge-v1"
+
+    async def judge(self, request: object) -> object:
+        del request
+        raise AssertionError("failed generations must not be sent to a paid judge")
+
+
 def build_catalogs() -> tuple[DatasetCatalog, VariantRegistry]:
     datasets = DatasetCatalog(
         datasets={
@@ -318,6 +350,48 @@ def test_runner_generates_only_the_seeded_variant_subset() -> None:
         async with sessions() as session:
             results = (await session.scalars(select(EvalQueryResultRow))).all()
         assert sum(row.generation_record is not None for row in results) == 1
+        await engine.dispose()
+
+    asyncio.run(exercise())
+
+
+def test_runner_does_not_judge_a_failed_generation() -> None:
+    async def exercise() -> None:
+        engine = create_engine("sqlite+aiosqlite:///:memory:")
+        async with engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+        sessions = create_session_factory(engine)
+        await seed_dataset(sessions)
+        datasets, variants = build_catalogs()
+
+        completed = await run_retrieval_evaluation(
+            sessions,
+            search=FakeSearchExecutor(variants),
+            datasets=datasets,
+            variants=variants,
+            spec=EvalRunSpec(
+                dataset="fixture",
+                variants=("bm25",),
+                sample_size=1,
+                generation_enabled=True,
+                generation_sample_size=1,
+                generation_variants=("bm25",),
+                generator_profile="default",
+                judge_profiles=("default",),
+                generation_prompt_version="answer-v1",
+                judge_prompt_version="judge-v1",
+            ),
+            answer_service=FailingAnswerService(),
+            judge_renderer=object(),  # type: ignore[arg-type]
+            judges={"default": UnexpectedJudge()},  # type: ignore[dict-item]
+        )
+
+        assert completed.state is EvalRunState.COMPLETED
+        async with sessions() as session:
+            result = await session.scalar(select(EvalQueryResultRow))
+        assert result is not None
+        assert result.judge_records == {}
+        assert result.judge_scores == {}
         await engine.dispose()
 
     asyncio.run(exercise())

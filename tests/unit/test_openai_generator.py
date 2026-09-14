@@ -51,6 +51,8 @@ def response_body(
         "citations": ["[1]"],
         "abstained": False,
         "confidence": "high",
+        "verification_label": None,
+        "rationale_sentences": [{"local_id": "[1]", "sentence_indices": [0]}],
     }
     return {
         "id": "resp_123",
@@ -117,7 +119,12 @@ def test_openai_adapter_sends_structured_response_request_and_accounts_for_cost(
     assert captured["prompt_cache_key"] == REQUEST.rendered_prompt_hash
     assert captured["reasoning"] == {"effort": "medium"}
     assert captured["text"]["format"]["type"] == "json_schema"  # type: ignore[index]
+    rationale_schema = captured["text"]["format"]["schema"]["properties"][  # type: ignore[index]
+        "rationale_sentences"
+    ]
+    assert rationale_schema["type"] == "array"
     assert result.output.confidence is Confidence.HIGH
+    assert result.output.rationale_sentences == {"[1]": (0,)}
     assert result.provider_request_id == "resp_123"
     assert result.usage.cached_input_tokens == 60
     assert result.usage.cache_write_input_tokens == 10
