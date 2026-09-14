@@ -18,6 +18,56 @@ evaluation** from the Actions tab and start with SciFact at 50 queries. See the
 The production-style ECS/RDS deployment remains available as an explicit opt-in. Its workflows are
 blocked until the repository variable `PORTFOLIO_MODE` is set to `false`.
 
+## Architecture
+
+```mermaid
+flowchart TB
+    ENTRY["CLI · FastAPI · GitHub Actions"] --> ORCH["Application services · durable worker queue"]
+
+    ORCH --> INGEST["Checksum-pinned ingestion"]
+    ORCH --> RETRIEVE["Retrieval pipeline"]
+    ORCH --> EVAL["Resumable evaluation runner"]
+
+    INGEST --> PG[("PostgreSQL · pgvector")]
+    INGEST --> ARTIFACTS[("BM25 · model · report artifacts")]
+
+    RETRIEVE --> BM25["BM25"]
+    RETRIEVE --> DENSE["BGE-small dense search"]
+    BM25 --> FUSION["Optional RRF fusion"]
+    DENSE --> FUSION
+    FUSION --> RERANK["Optional cross-encoder rerank"]
+    BM25 --> RESULTS["Ranked passages"]
+    DENSE --> RESULTS
+    FUSION --> RESULTS
+    RERANK --> RESULTS
+    PG --> DENSE
+    ARTIFACTS --> BM25
+
+    RESULTS --> ANSWER["Versioned cited-answer prompt"]
+    ANSWER --> GENERATOR["Schema-constrained generator"]
+    GENERATOR --> VALIDATE["Deterministic citation validation"]
+    GENERATOR <--> LLMCACHE[("Immutable generation cache")]
+
+    EVAL --> RETRIEVE
+    EVAL --> ANSWER
+    EVAL --> METRICS["Retrieval · label · rationale metrics"]
+    EVAL --> JUDGES["Primary + secondary judges"]
+    JUDGES <--> JUDGECACHE[("Immutable judge cache")]
+    METRICS --> REPORT["JSON + Markdown reports · regression gate"]
+    JUDGES --> REPORT
+
+    ORCH -. "metrics + traces" .-> OTEL["OpenTelemetry Collector"]
+    OTEL --> OBS["Prometheus · Tempo · Grafana"]
+    PG --- LLMCACHE
+    PG --- JUDGECACHE
+```
+
+The online answer path and offline benchmark path share retrieval, generation, validation, and
+content-addressed caches, while evaluation adds deterministic metrics, independent judges,
+confidence intervals, and regression gates. See the [model card](docs/model_card.md),
+[dataset card](docs/data_card.md), and [deployment ADR](docs/adr/0001-ecs-rds-deployment.md) for the
+component and operating constraints behind the diagram.
+
 ## Results
 
 All test queries in three BEIR domains, using `BAAI/bge-small-en-v1.5` embeddings and
@@ -45,6 +95,8 @@ SciFact labels and evidence rationales, and two independently configured judges.
 responses completed successfully: 32 answers and 18 evidence-based abstentions. The complete
 Markdown and JSON artifacts are archived with commit and index provenance in
 [`evals/runs/ebd3a2dc-e3db-4348-95a4-e38a10ee9d1d/report.md`](evals/runs/ebd3a2dc-e3db-4348-95a4-e38a10ee9d1d/report.md).
+The [generation error analysis](docs/generation_error_analysis.md) breaks down all 11 label errors,
+evidence-selection weaknesses, representative cases, and the next held-out-safe experiment.
 
 ![SciFact generated-answer quality](docs/assets/generation-quality.svg)
 
@@ -556,12 +608,12 @@ flight finishes.
 
 Phase 2's local implementation and SciFact generation evidence are complete. The checked-in
 50-query report covers generation correctness, two-judge scoring, confidence intervals, model
-cost, and reproducible provenance. A maintainer still needs to author and independently review the
-human calibration labels, publish the kappa report, and record answer latency on the reference
-hardware. Cross-domain answer reports remain optional future evidence rather than a requirement
-for the zero-cost portfolio path. A complete answer trace should also be confirmed in the optional
-Langfuse profile; OpenTelemetry spans and model/cost attributes are emitted, but that UI check
-requires a configured Langfuse project.
+cost, reproducible provenance, and a documented failure analysis. Human judge calibration is
+explicitly deferred, so judge scores remain descriptive and are not presented as validated human
+agreement. Cross-domain answer reports and provider-latency benchmarking are optional future
+evidence rather than requirements for the zero-cost portfolio path. A complete answer trace could
+also be confirmed in the optional Langfuse profile; OpenTelemetry spans and model/cost attributes
+are emitted, but that UI check requires a configured Langfuse project.
 
 Phase 3's production implementation is complete in code: remote state and OIDC, the ECS runtime, stateless S3
 artifact synchronization, component-injected RDS credentials, ADOT-to-CloudWatch/X-Ray telemetry,
@@ -573,10 +625,11 @@ certificate and provider secret, run the protected infrastructure and release wo
 evaluation through the deployed worker, record observed cost, and capture the CloudWatch/X-Ray
 screenshots.
 
-Remaining portfolio packaging is intentionally local-first: human judge calibration, a concise
-model/data card, an observability screenshot, and a release tag. The external `deep-research`
-scoring adapter is optional. The real-dataset CI matrix is slow the first time a content-derived
-cache key is built—especially for FiQA—but subsequent runs restore the durable index snapshots.
+Remaining portfolio packaging is intentionally local-first: an observability screenshot and a
+release tag after `dev` is merged to `main`. Human judge calibration and the external
+`deep-research` scoring adapter are deferred. The real-dataset CI matrix is slow the first time a
+content-derived cache key is built—especially for FiQA—but subsequent runs restore the durable
+index snapshots.
 
 ## Design
 
