@@ -1,0 +1,213 @@
+name: AWS infrastructure
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/infrastructure.yml"
+      - "infra/**"
+  push:
+    branches: [dev]
+    paths:
+      - ".github/workflows/infrastructure.yml"
+      - "infra/**"
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: "Portfolio mode is free; AWS plan/apply requires PORTFOLIO_MODE=false"
+        required: true
+        default: portfolio
+        type: choice
+        options:
+          - portfolio
+          - plan
+          - apply
+
+permissions:
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+  TERRAFORM_VERSION: 1.14.6
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+  TF_VAR_alarm_notification_email: ${{ vars.AWS_ALARM_NOTIFICATION_EMAIL }}
+  TF_VAR_load_balancer_certificate_arn: ${{ vars.AWS_ACM_CERTIFICATE_ARN }}
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+      - name: Check formatting
+        run: terraform fmt -check -recursive infra
+      - name: Validate bootstrap stack
+        working-directory: infra/bootstrap
+        run: |
+          terraform init -backend=false
+          terraform validate
+      - name: Validate application stack
+        working-directory: infra/aws
+        run: |
+          terraform init -backend=false
+          terraform validate
+      - name: Test application stack
+        working-directory: infra/aws
+        run: terraform test
+      - name: Scan infrastructure configuration
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: config
+          scan-ref: infra
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          hide-progress: true
+
+  dev-plan:
+    if: >-
+      github.event_name == 'push' &&
+      vars.PORTFOLIO_MODE == 'false' &&
+      vars.AWS_TERRAFORM_PLAN_ROLE_ARN != '' &&
+      vars.AWS_TERRAFORM_STATE_BUCKET != '' &&
+      vars.AWS_TERRAFORM_STATE_KEY != '' &&
+      vars.AWS_ACM_CERTIFICATE_ARN != ''
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+      - uses: aws-actions/configure-aws-credentials@v6.2.3
+        with:
+          role-to-assume: ${{ vars.AWS_TERRAFORM_PLAN_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Initialize remote state
+        working-directory: infra/aws
+        run: >-
+          terraform init
+          -backend-config="bucket=${{ vars.AWS_TERRAFORM_STATE_BUCKET }}"
+          -backend-config="key=${{ vars.AWS_TERRAFORM_STATE_KEY }}"
+          -backend-config="region=${AWS_REGION}"
+      - name: Preserve the currently deployed release
+        working-directory: infra/aws
+        run: |
+          IMAGE_DIGEST=$(terraform output -raw deployed_image_digest 2>/dev/null || true)
+          API_DESIRED_COUNT=$(terraform output -raw configured_api_desired_count 2>/dev/null || true)
+          WORKER_DESIRED_COUNT=$(terraform output -raw configured_worker_desired_count 2>/dev/null || true)
+          {
+            if [[ "${IMAGE_DIGEST}" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+              echo "TF_VAR_application_image_digest=${IMAGE_DIGEST}"
+            fi
+            if [[ "${API_DESIRED_COUNT}" =~ ^[0-9]+$ ]]; then
+              echo "TF_VAR_api_desired_count=${API_DESIRED_COUNT}"
+            fi
+            if [[ "${WORKER_DESIRED_COUNT}" =~ ^[0-9]+$ ]]; then
+              echo "TF_VAR_worker_desired_count=${WORKER_DESIRED_COUNT}"
+            fi
+          } >> "${GITHUB_ENV}"
+      - name: Plan
+        working-directory: infra/aws
+        run: terraform plan -no-color
+
+  protected-plan-or-apply:
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.operation != 'portfolio' &&
+      vars.PORTFOLIO_MODE == 'false'
+    needs: validate
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+    concurrency:
+      group: ragops-production
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+      - name: Require deployment configuration
+        env:
+          APPLY_ROLE_ARN: ${{ vars.AWS_TERRAFORM_APPLY_ROLE_ARN }}
+          CERTIFICATE_ARN: ${{ vars.AWS_ACM_CERTIFICATE_ARN }}
+          STATE_BUCKET: ${{ vars.AWS_TERRAFORM_STATE_BUCKET }}
+          STATE_KEY: ${{ vars.AWS_TERRAFORM_STATE_KEY }}
+        run: >-
+          test -n "${APPLY_ROLE_ARN}" &&
+          test -n "${CERTIFICATE_ARN}" &&
+          test -n "${STATE_BUCKET}" &&
+          test -n "${STATE_KEY}"
+      - uses: aws-actions/configure-aws-credentials@v6.2.3
+        with:
+          role-to-assume: ${{ vars.AWS_TERRAFORM_APPLY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Initialize remote state
+        working-directory: infra/aws
+        run: >-
+          terraform init
+          -backend-config="bucket=${{ vars.AWS_TERRAFORM_STATE_BUCKET }}"
+          -backend-config="key=${{ vars.AWS_TERRAFORM_STATE_KEY }}"
+          -backend-config="region=${AWS_REGION}"
+      - name: Preserve the currently deployed release
+        working-directory: infra/aws
+        run: |
+          IMAGE_DIGEST=$(terraform output -raw deployed_image_digest 2>/dev/null || true)
+          API_DESIRED_COUNT=$(terraform output -raw configured_api_desired_count 2>/dev/null || true)
+          WORKER_DESIRED_COUNT=$(terraform output -raw configured_worker_desired_count 2>/dev/null || true)
+          {
+            if [[ "${IMAGE_DIGEST}" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+              echo "TF_VAR_application_image_digest=${IMAGE_DIGEST}"
+            fi
+            if [[ "${API_DESIRED_COUNT}" =~ ^[0-9]+$ ]]; then
+              echo "TF_VAR_api_desired_count=${API_DESIRED_COUNT}"
+            fi
+            if [[ "${WORKER_DESIRED_COUNT}" =~ ^[0-9]+$ ]]; then
+              echo "TF_VAR_worker_desired_count=${WORKER_DESIRED_COUNT}"
+            fi
+          } >> "${GITHUB_ENV}"
+      - name: Plan
+        if: inputs.operation == 'plan'
+        working-directory: infra/aws
+        run: terraform plan -no-color
+      - name: Apply
+        if: inputs.operation == 'apply'
+        working-directory: infra/aws
+        run: terraform apply -auto-approve
+
+  portfolio-mode:
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.operation == 'portfolio'
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Confirm zero-AWS portfolio mode
+        run: |
+          {
+            echo "### Portfolio mode"
+            echo
+            echo "No AWS credentials were requested and no AWS resources were created."
+            echo "Run the **Publish portfolio evaluation** workflow to generate a report."
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+  aws-opt-in-required:
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.operation != 'portfolio' &&
+      vars.PORTFOLIO_MODE != 'false'
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Refuse an accidental paid deployment
+        run: |
+          echo "AWS deployment is disabled while PORTFOLIO_MODE is unset or true." >&2
+          echo "Set the repository variable PORTFOLIO_MODE=false to explicitly enable it." >&2
+          exit 1

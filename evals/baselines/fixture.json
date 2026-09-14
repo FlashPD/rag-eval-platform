@@ -1,0 +1,30 @@
+{
+  "dataset": "fixture",
+  "generation_prompt_version": null,
+  "generation_sample_size": null,
+  "generation_variants": [],
+  "generator_profile": null,
+  "git_commit": "48b212a70b0a2b37cd43d7e7a45ff58321fe44e4",
+  "index_fingerprints": {
+    "bm25": "381696cf02edaa678d3ec0b878d677c0bda575669ed9372ab043530019bea2c7"
+  },
+  "judge_profiles": [],
+  "judge_prompt_version": null,
+  "metrics": {
+    "bm25": {
+      "mrr_at_10": 1.0,
+      "ndcg_at_10": 1.0,
+      "recall_at_10": 1.0,
+      "recall_at_100": 1.0
+    }
+  },
+  "recorded_at": "2026-09-10T01:14:09.249663Z",
+  "run_id": "302c29f3-52c8-4856-832f-5a0310400407",
+  "sample_size": null,
+  "seed": 42,
+  "split": "test",
+  "variant_hashes": {
+    "bm25": "d68440286741fdd5d56009c985b644665dab4b3fda6518a0d79237d5c98a8c23"
+  },
+  "version": 2
+}

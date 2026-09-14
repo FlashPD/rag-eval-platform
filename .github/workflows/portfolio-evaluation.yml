@@ -1,0 +1,173 @@
+name: Publish portfolio evaluation
+
+on:
+  workflow_dispatch:
+    inputs:
+      dataset:
+        description: "Benchmark to evaluate"
+        required: true
+        default: scifact
+        type: choice
+        options:
+          - scifact
+          - nfcorpus
+          - fiqa
+      sample_size:
+        description: "50 is quick; full evaluates every query"
+        required: true
+        default: "50"
+        type: choice
+        options:
+          - "50"
+          - full
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: portfolio-evaluation-${{ inputs.dataset }}
+  cancel-in-progress: false
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    services:
+      postgres:
+        image: pgvector/pgvector:0.8.1-pg16
+        env:
+          POSTGRES_DB: ragops
+          POSTGRES_USER: ragops
+          POSTGRES_PASSWORD: ragops
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ragops -d ragops"
+          --health-interval 3s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      RAGOPS_ENVIRONMENT: test
+      RAGOPS_DATABASE_URL: postgresql+asyncpg://ragops:ragops@localhost:5432/ragops
+      RAGOPS_POSTGRES_URL: postgresql://ragops:ragops@localhost:5432/ragops
+      RAGOPS_MODEL_DEVICE: cpu
+      RETRIEVAL_VARIANTS: bm25,dense_bge_small,hybrid_rrf,hybrid_rrf_rerank
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: dev
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Restore model weights
+        uses: actions/cache@v6
+        with:
+          path: artifacts/models
+          key: >-
+            ${{ runner.os }}-${{ runner.arch }}-ragops-models-v1-${{
+            hashFiles('config/models.yaml', 'requirements-dev.lock') }}
+      - name: Restore retrieval index
+        id: retrieval-index-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            artifacts/bm25
+            artifacts/datasets
+            artifacts/ci-index/${{ inputs.dataset }}.dump
+          key: >-
+            ${{ runner.os }}-${{ runner.arch }}-ragops-${{ inputs.dataset }}-index-v1-${{
+            hashFiles('config/datasets.yaml', 'config/models.yaml', 'pyproject.toml',
+            'requirements-dev.lock', 'migrations/versions/**',
+            'src/ragops/ingestion/**', 'src/ragops/persistence/**') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-ragops-${{ inputs.dataset }}-index-v1-
+      - name: Install project
+        run: |
+          python -m pip install -r requirements-dev.lock
+          python -m pip install --no-deps -e .
+      - name: Restore or build retrieval index
+        run: |
+          mkdir -p "artifacts/portfolio/${{ inputs.dataset }}"
+          bash scripts/ci/prepare_retrieval_index.sh \
+            "${{ inputs.dataset }}" \
+            "artifacts/ci-index/${{ inputs.dataset }}.dump" \
+            2>&1 | tee "artifacts/portfolio/${{ inputs.dataset }}/prepare.log"
+      - name: Save retrieval index
+        if: steps.retrieval-index-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            artifacts/bm25
+            artifacts/datasets
+            artifacts/ci-index/${{ inputs.dataset }}.dump
+          key: ${{ steps.retrieval-index-cache.outputs.cache-primary-key }}
+      - name: Run retrieval evaluation and save report
+        id: evaluation
+        env:
+          DATASET: ${{ inputs.dataset }}
+          SAMPLE_SIZE: ${{ inputs.sample_size }}
+        run: |
+          args=(
+            --dataset "${DATASET}"
+            --variants "${RETRIEVAL_VARIANTS}"
+            --seed 42
+            --device cpu
+          )
+          if [[ "${SAMPLE_SIZE}" != "full" ]]; then
+            args+=(--sample-size "${SAMPLE_SIZE}")
+          fi
+
+          ragops eval run "${args[@]}" \
+            | tee "artifacts/portfolio/${DATASET}/run.json"
+          RUN_ID=$(python -c 'import json, os; path = "artifacts/portfolio/" + os.environ["DATASET"] + "/run.json"; print(json.load(open(path))["id"])')
+          ragops eval report "${RUN_ID}"
+          echo "run_id=${RUN_ID}" >> "${GITHUB_OUTPUT}"
+      - name: Upload report as a workflow artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ inputs.dataset }}-portfolio-${{ steps.evaluation.outputs.run_id }}
+          path: |
+            evals/runs/${{ steps.evaluation.outputs.run_id }}
+            artifacts/portfolio/${{ inputs.dataset }}/run.json
+          if-no-files-found: error
+      - name: Publish report branch and open a pull request
+        env:
+          DATASET: ${{ inputs.dataset }}
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ steps.evaluation.outputs.run_id }}
+          SAMPLE_SIZE: ${{ inputs.sample_size }}
+        run: |
+          BRANCH="portfolio/${DATASET}-${RUN_ID}"
+          REPORT_PATH="evals/runs/${RUN_ID}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "${BRANCH}"
+          git add "${REPORT_PATH}/report.md" "${REPORT_PATH}/report.json"
+          git commit -m "docs(evals): publish ${DATASET} portfolio report"
+          git push --set-upstream origin "${BRANCH}"
+
+          {
+            echo "### Portfolio evaluation"
+            echo
+            echo "- Dataset: \`${DATASET}\`"
+            echo "- Sample size: \`${SAMPLE_SIZE}\`"
+            echo "- Run: \`${RUN_ID}\`"
+            echo "- Report branch: \`${BRANCH}\`"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+          if PR_URL=$(gh pr create \
+            --base dev \
+            --head "${BRANCH}" \
+            --title "docs(evals): publish ${DATASET} portfolio report" \
+            --body "Publishes retrieval-only portfolio run \`${RUN_ID}\` for \`${DATASET}\` (sample size: \`${SAMPLE_SIZE}\`). This workflow used no AWS credentials or resources."); then
+            echo "- Pull request: ${PR_URL}" >> "${GITHUB_STEP_SUMMARY}"
+          else
+            {
+              echo
+              echo "> The report branch was pushed, but GitHub did not allow the workflow to create a pull request."
+              echo "> Open a pull request from \`${BRANCH}\` to \`dev\` manually."
+            } >> "${GITHUB_STEP_SUMMARY}"
+          fi

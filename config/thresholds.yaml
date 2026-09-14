@@ -1,0 +1,23 @@
+metrics:
+  ndcg_at_10:
+    maximum_absolute_drop: 0.01
+  recall_at_10:
+    maximum_absolute_drop: 0.01
+  recall_at_100:
+    maximum_absolute_drop: 0.01
+  mrr_at_10:
+    maximum_absolute_drop: 0.01
+  faithfulness:
+    maximum_absolute_drop: 0.02
+  relevance:
+    maximum_absolute_drop: 0.02
+  citation_validity:
+    maximum_absolute_drop: 0.01
+  context_precision:
+    maximum_absolute_drop: 0.01
+  abstention_correctness:
+    maximum_absolute_drop: 0.02
+  scifact_macro_f1:
+    maximum_absolute_drop: 0.02
+  scifact_rationale_precision:
+    maximum_absolute_drop: 0.02

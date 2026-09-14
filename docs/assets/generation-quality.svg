@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="590" viewBox="0 0 1000 590" role="img" aria-labelledby="title description">
+  <title id="title">SciFact generated-answer quality</title>
+  <desc id="description">Horizontal bars show citation validity 100 percent, abstention correctness 68 percent, label accuracy 78 percent, macro F1 80 percent, rationale precision 45.3 percent, primary judge faithfulness 90.3 percent, and secondary judge faithfulness 96 percent on 50 queries.</desc>
+  <rect width="1000" height="590" rx="18" fill="#f8fafc"/>
+  <text x="44" y="54" fill="#0f172a" font-family="ui-sans-serif, system-ui, sans-serif" font-size="28" font-weight="700">SciFact generated-answer quality</text>
+  <text x="44" y="84" fill="#475569" font-family="ui-sans-serif, system-ui, sans-serif" font-size="16">50-query seed-42 sample · dense retrieval · scifact-v2</text>
+
+  <g fill="#94a3b8" font-family="ui-sans-serif, system-ui, sans-serif" font-size="13" text-anchor="middle">
+    <text x="330" y="122">0%</text>
+    <text x="480" y="122">25%</text>
+    <text x="630" y="122">50%</text>
+    <text x="780" y="122">75%</text>
+    <text x="930" y="122">100%</text>
+  </g>
+  <g stroke="#e2e8f0" stroke-width="1">
+    <line x1="330" y1="134" x2="330" y2="544"/>
+    <line x1="480" y1="134" x2="480" y2="544"/>
+    <line x1="630" y1="134" x2="630" y2="544"/>
+    <line x1="780" y1="134" x2="780" y2="544"/>
+    <line x1="930" y1="134" x2="930" y2="544"/>
+  </g>
+
+  <g font-family="ui-sans-serif, system-ui, sans-serif" font-size="16">
+    <text x="44" y="171" fill="#334155">Citation validity</text>
+    <rect x="330" y="150" width="600" height="30" rx="6" fill="#d1fae5"/>
+    <rect x="330" y="150" width="600" height="30" rx="6" fill="#10b981"/>
+    <text x="918" y="171" fill="#ffffff" font-weight="700" text-anchor="end">100.0%</text>
+
+    <text x="44" y="229" fill="#334155">Abstention correctness</text>
+    <rect x="330" y="208" width="600" height="30" rx="6" fill="#e2e8f0"/>
+    <rect x="330" y="208" width="408" height="30" rx="6" fill="#f59e0b"/>
+    <text x="726" y="229" fill="#ffffff" font-weight="700" text-anchor="end">68.0%</text>
+
+    <text x="44" y="287" fill="#334155">SciFact label accuracy</text>
+    <rect x="330" y="266" width="600" height="30" rx="6" fill="#e2e8f0"/>
+    <rect x="330" y="266" width="468" height="30" rx="6" fill="#3b82f6"/>
+    <text x="786" y="287" fill="#ffffff" font-weight="700" text-anchor="end">78.0%</text>
+
+    <text x="44" y="345" fill="#334155">SciFact macro-F1</text>
+    <rect x="330" y="324" width="600" height="30" rx="6" fill="#e2e8f0"/>
+    <rect x="330" y="324" width="480" height="30" rx="6" fill="#6366f1"/>
+    <text x="798" y="345" fill="#ffffff" font-weight="700" text-anchor="end">80.0%</text>
+
+    <text x="44" y="403" fill="#334155">Rationale precision</text>
+    <rect x="330" y="382" width="600" height="30" rx="6" fill="#e2e8f0"/>
+    <rect x="330" y="382" width="272" height="30" rx="6" fill="#f97316"/>
+    <text x="590" y="403" fill="#ffffff" font-weight="700" text-anchor="end">45.3%</text>
+
+    <text x="44" y="461" fill="#334155">Primary judge faithfulness</text>
+    <rect x="330" y="440" width="600" height="30" rx="6" fill="#e2e8f0"/>
+    <rect x="330" y="440" width="542" height="30" rx="6" fill="#8b5cf6"/>
+    <text x="860" y="461" fill="#ffffff" font-weight="700" text-anchor="end">90.3%</text>
+
+    <text x="44" y="519" fill="#334155">Secondary judge faithfulness</text>
+    <rect x="330" y="498" width="600" height="30" rx="6" fill="#e2e8f0"/>
+    <rect x="330" y="498" width="576" height="30" rx="6" fill="#a855f7"/>
+    <text x="894" y="519" fill="#ffffff" font-weight="700" text-anchor="end">96.0%</text>
+  </g>
+  <text x="44" y="566" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif" font-size="13">Judge scores are descriptive model-based evaluations, not substitutes for human calibration.</text>
+</svg>

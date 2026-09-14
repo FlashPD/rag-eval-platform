@@ -1,0 +1,539 @@
+from datetime import UTC, datetime
+from pathlib import Path
+from types import SimpleNamespace
+from uuid import uuid4
+
+import pytest
+
+import ragops.cli as cli
+from ragops.cli import build_parser, main
+from ragops.contracts import (
+    BaselineDocument,
+    EvalProgress,
+    EvalRun,
+    EvalRunSpec,
+    EvalRunState,
+    EvaluationReport,
+    GateMetricResult,
+    GateResult,
+    LatencySummary,
+    MetricSummary,
+)
+from ragops.evaluation import read_baseline
+
+CONFIG_DIRECTORY = Path(__file__).parents[2] / "config"
+
+
+class FakeArtifactStore:
+    def __init__(self) -> None:
+        self.runtime_hydrations = 0
+        self.ingestion_hydrations = 0
+        self.published_ingestions: list[Path] = []
+        self.published_reports: list[tuple[object, tuple[Path, ...]]] = []
+
+    async def hydrate_runtime(self) -> int:
+        self.runtime_hydrations += 1
+        return 0
+
+    async def hydrate_ingestion(self) -> int:
+        self.ingestion_hydrations += 1
+        return 0
+
+    async def publish_ingestion(self, bm25_artifact: Path) -> int:
+        self.published_ingestions.append(bm25_artifact)
+        return 1
+
+    async def publish_report(self, run_id: object, files: tuple[Path, ...]) -> int:
+        self.published_reports.append((run_id, files))
+        return len(files)
+
+
+def test_cli_reports_version(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit, match="0"):
+        main(["--version"])
+
+    assert capsys.readouterr().out == "0.1.0\n"
+
+
+def test_eval_run_parser_accepts_comma_separated_variants() -> None:
+    arguments = build_parser().parse_args(
+        [
+            "eval",
+            "run",
+            "--dataset",
+            "scifact",
+            "--variants",
+            "bm25, hybrid_rrf",
+            "--sample-size",
+            "50",
+            "--seed",
+            "7",
+        ]
+    )
+
+    assert arguments.command == "eval"
+    assert arguments.evaluation_command == "run"
+    assert arguments.variants == ("bm25", "hybrid_rrf")
+    assert arguments.sample_size == 50
+    assert arguments.seed == 7
+
+
+def test_eval_run_parser_rejects_duplicate_variants() -> None:
+    with pytest.raises(SystemExit, match="2"):
+        build_parser().parse_args(
+            ["eval", "run", "--dataset", "scifact", "--variants", "bm25,bm25"]
+        )
+
+
+def test_ingest_hydrates_and_publishes_cloud_artifacts(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, object] = {}
+    bm25_artifact = tmp_path / "artifacts" / "bm25" / ("a" * 64)
+
+    class FakeEngine:
+        async def dispose(self) -> None:
+            captured["disposed"] = True
+
+    class FakeIngestionService:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            captured["service_kwargs"] = kwargs
+
+        async def ingest(self, **kwargs: object) -> object:
+            captured["ingest_kwargs"] = kwargs
+            return SimpleNamespace(
+                bm25_artifact=SimpleNamespace(path=bm25_artifact),
+                model_dump_json=lambda **kwargs: "{}",
+            )
+
+    bundle = cli.load_config_bundle(CONFIG_DIRECTORY)
+    settings = SimpleNamespace(
+        configuration_directory=CONFIG_DIRECTORY,
+        database_url="sqlite+aiosqlite:///:memory:",
+        artifact_directory=tmp_path / "artifacts",
+        model_cache_directory=tmp_path / "models",
+    )
+    artifact_store = FakeArtifactStore()
+    monkeypatch.setattr(cli, "Settings", lambda: settings)
+    monkeypatch.setattr(cli, "build_artifact_store", lambda _: artifact_store)
+    monkeypatch.setattr(cli, "load_config_bundle", lambda _: bundle)
+    monkeypatch.setattr(cli, "create_engine", lambda _: FakeEngine())
+    monkeypatch.setattr(cli, "create_session_factory", lambda _: object())
+    monkeypatch.setattr(cli, "IngestionService", FakeIngestionService)
+    monkeypatch.setattr(cli, "SentenceTransformerEmbedder", lambda *args, **kwargs: object())
+
+    exit_code = main(["ingest", "--dataset", "fixture"])
+
+    assert exit_code == 0
+    assert artifact_store.ingestion_hydrations == 1
+    assert artifact_store.published_ingestions == [bm25_artifact]
+    assert captured["disposed"] is True
+
+
+def test_eval_baseline_paths_default_to_the_run_dataset() -> None:
+    run_id = uuid4()
+    parser = build_parser()
+
+    gate_arguments = parser.parse_args(["eval", "gate", str(run_id)])
+    baseline_arguments = parser.parse_args(["eval", "baseline", str(run_id)])
+
+    assert gate_arguments.baseline is None
+    assert baseline_arguments.output is None
+
+
+def test_eval_run_command_builds_and_executes_spec(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeEngine:
+        async def dispose(self) -> None:
+            captured["disposed"] = True
+
+    async def fake_run_retrieval_evaluation(
+        sessions: object,
+        *,
+        search: object,
+        datasets: object,
+        variants: object,
+        spec: EvalRunSpec,
+        git_commit: str | None = None,
+        image_digest: str | None = None,
+        answer_service: object | None = None,
+        judge_renderer: object | None = None,
+        judges: object | None = None,
+    ) -> EvalRun:
+        captured["sessions"] = sessions
+        captured["search"] = search
+        captured["spec"] = spec
+        captured["git_commit"] = git_commit
+        captured["image_digest"] = image_digest
+        captured["answer_service"] = answer_service
+        captured["judge_renderer"] = judge_renderer
+        captured["judges"] = judges
+        return EvalRun(
+            id=uuid4(),
+            spec=spec,
+            state=EvalRunState.COMPLETED,
+            progress=EvalProgress(completed_queries=2, total_queries=2),
+            created_at=datetime.now(UTC),
+            completed_at=datetime.now(UTC),
+        )
+
+    bundle = cli.load_config_bundle(CONFIG_DIRECTORY)
+    settings = SimpleNamespace(
+        configuration_directory=CONFIG_DIRECTORY,
+        database_url="sqlite+aiosqlite:///:memory:",
+        artifact_directory=Path("artifacts"),
+        model_cache_directory=Path("artifacts/models"),
+        model_device=None,
+    )
+    sessions = object()
+    search = object()
+    artifact_store = FakeArtifactStore()
+    monkeypatch.setattr(cli, "Settings", lambda: settings)
+    monkeypatch.setattr(cli, "build_artifact_store", lambda _: artifact_store)
+    monkeypatch.setattr(cli, "load_config_bundle", lambda _: bundle)
+    monkeypatch.setattr(cli, "create_engine", lambda _: FakeEngine())
+    monkeypatch.setattr(cli, "create_session_factory", lambda _: sessions)
+    monkeypatch.setattr(cli, "build_retrieval_pipeline", lambda *args, **kwargs: search)
+    monkeypatch.setattr(cli, "run_retrieval_evaluation", fake_run_retrieval_evaluation)
+    monkeypatch.setattr(cli, "resolve_git_commit", lambda: "commit-sha")
+    monkeypatch.setattr(cli, "resolve_image_digest", lambda: "sha256:image")
+
+    exit_code = main(
+        [
+            "eval",
+            "run",
+            "--dataset",
+            "fixture",
+            "--variants",
+            "bm25",
+            "--sample-size",
+            "2",
+        ]
+    )
+
+    assert exit_code == 0
+    assert captured["spec"] == EvalRunSpec(
+        dataset="fixture",
+        split="test",
+        variants=("bm25",),
+        sample_size=2,
+        seed=42,
+    )
+    assert captured["disposed"] is True
+    assert captured["git_commit"] == "commit-sha"
+    assert captured["image_digest"] == "sha256:image"
+    assert artifact_store.runtime_hydrations == 1
+    assert '"state": "completed"' in capsys.readouterr().out
+
+
+def test_eval_report_command_renders_markdown(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    run_id = uuid4()
+    now = datetime.now(UTC)
+    run = EvalRun(
+        id=run_id,
+        spec=EvalRunSpec(dataset="fixture", variants=("bm25",)),
+        state=EvalRunState.COMPLETED,
+        progress=EvalProgress(completed_queries=1, total_queries=1),
+        created_at=now,
+        completed_at=now,
+    )
+    report = EvaluationReport(
+        run=run,
+        metrics=(
+            MetricSummary(
+                metric="ndcg_at_10",
+                variant="bm25",
+                mean=1.0,
+                interval_low=1.0,
+                interval_high=1.0,
+                query_count=1,
+            ),
+        ),
+        latencies=(
+            LatencySummary(
+                variant="bm25",
+                stage="sparse_retrieve",
+                p50_ms=1.0,
+                p95_ms=1.0,
+                sample_count=1,
+            ),
+        ),
+    )
+    captured: dict[str, object] = {}
+
+    class FakeEngine:
+        async def dispose(self) -> None:
+            captured["disposed"] = True
+
+    async def fake_get_evaluation_report(sessions: object, requested_run_id: object) -> object:
+        captured["sessions"] = sessions
+        captured["run_id"] = requested_run_id
+        return report
+
+    settings = SimpleNamespace(database_url="sqlite+aiosqlite:///:memory:")
+    sessions = object()
+    artifact_store = FakeArtifactStore()
+    monkeypatch.setattr(cli, "Settings", lambda: settings)
+    monkeypatch.setattr(cli, "build_artifact_store", lambda _: artifact_store)
+    monkeypatch.setattr(cli, "create_engine", lambda _: FakeEngine())
+    monkeypatch.setattr(cli, "create_session_factory", lambda _: sessions)
+    monkeypatch.setattr(cli, "get_evaluation_report", fake_get_evaluation_report)
+
+    exit_code = main(["eval", "report", str(run_id), "--output-dir", str(tmp_path)])
+
+    assert exit_code == 0
+    assert captured["run_id"] == run_id
+    assert captured["disposed"] is True
+    assert f"# Retrieval evaluation `{run_id}`" in capsys.readouterr().out
+    assert (tmp_path / str(run_id) / "report.md").exists()
+    assert (tmp_path / str(run_id) / "report.json").exists()
+    assert artifact_store.published_reports == [
+        (
+            run_id,
+            (
+                tmp_path / str(run_id) / "report.md",
+                tmp_path / str(run_id) / "report.json",
+            ),
+        )
+    ]
+
+
+def test_eval_report_command_can_skip_archiving(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    run_id = uuid4()
+    now = datetime.now(UTC)
+    report = EvaluationReport(
+        run=EvalRun(
+            id=run_id,
+            spec=EvalRunSpec(dataset="fixture", variants=("bm25",)),
+            state=EvalRunState.COMPLETED,
+            progress=EvalProgress(completed_queries=1, total_queries=1),
+            created_at=now,
+            completed_at=now,
+        ),
+        metrics=(
+            MetricSummary(
+                metric="ndcg_at_10",
+                variant="bm25",
+                mean=1.0,
+                interval_low=1.0,
+                interval_high=1.0,
+                query_count=1,
+            ),
+        ),
+        latencies=(),
+    )
+
+    class FakeEngine:
+        async def dispose(self) -> None:
+            return None
+
+    async def fake_get_evaluation_report(sessions: object, requested: object) -> object:
+        return report
+
+    artifact_store = FakeArtifactStore()
+    monkeypatch.setattr(cli, "Settings", lambda: SimpleNamespace(database_url="sqlite://"))
+    monkeypatch.setattr(cli, "build_artifact_store", lambda _: artifact_store)
+    monkeypatch.setattr(cli, "create_engine", lambda _: FakeEngine())
+    monkeypatch.setattr(cli, "create_session_factory", lambda _: object())
+    monkeypatch.setattr(cli, "get_evaluation_report", fake_get_evaluation_report)
+
+    exit_code = main(["eval", "report", str(run_id), "--output-dir", str(tmp_path), "--no-save"])
+
+    assert exit_code == 0
+    assert not (tmp_path / str(run_id)).exists()
+    assert artifact_store.published_reports == []
+    assert "saved" not in capsys.readouterr().out
+
+
+def test_eval_gate_command_exits_non_zero_on_regression(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    run_id = uuid4()
+    baseline_run_id = uuid4()
+    captured: dict[str, object] = {}
+
+    class FakeEngine:
+        async def dispose(self) -> None:
+            captured["disposed"] = True
+
+    async def fake_gate_evaluation_run(
+        sessions: object,
+        requested_run_id: object,
+        *,
+        baseline_path: Path,
+        thresholds: object,
+    ) -> GateResult:
+        captured["run_id"] = requested_run_id
+        captured["baseline_path"] = baseline_path
+        return GateResult(
+            passed=False,
+            dataset="scifact",
+            run_id=run_id,
+            baseline_run_id=baseline_run_id,
+            metrics=(
+                GateMetricResult(
+                    variant="bm25",
+                    metric="ndcg_at_10",
+                    baseline=0.60,
+                    observed=0.50,
+                    tolerance=0.01,
+                    breached=True,
+                ),
+            ),
+        )
+
+    bundle = cli.load_config_bundle(CONFIG_DIRECTORY)
+    settings = SimpleNamespace(
+        configuration_directory=CONFIG_DIRECTORY,
+        database_url="sqlite+aiosqlite:///:memory:",
+    )
+    monkeypatch.setattr(cli, "Settings", lambda: settings)
+    monkeypatch.setattr(cli, "load_config_bundle", lambda _: bundle)
+    monkeypatch.setattr(cli, "create_engine", lambda _: FakeEngine())
+    monkeypatch.setattr(cli, "create_session_factory", lambda _: object())
+    monkeypatch.setattr(cli, "gate_evaluation_run", fake_gate_evaluation_run)
+
+    exit_code = main(["eval", "gate", str(run_id), "--baseline", "evals/baselines/main.json"])
+
+    assert exit_code == 1
+    assert captured["run_id"] == run_id
+    assert captured["baseline_path"] == Path("evals/baselines/main.json")
+    assert captured["disposed"] is True
+    assert "# Regression gate FAILED" in capsys.readouterr().out
+
+
+def test_eval_baseline_command_writes_the_requested_path(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    run_id = uuid4()
+    baseline = BaselineDocument(
+        dataset="scifact",
+        split="test",
+        sample_size=50,
+        seed=42,
+        run_id=run_id,
+        recorded_at=datetime.now(UTC),
+        variant_hashes={"bm25": "v" * 64},
+        index_fingerprints={"bm25": "f" * 64},
+        metrics={"bm25": {"ndcg_at_10": 0.6}},
+    )
+
+    class FakeEngine:
+        async def dispose(self) -> None:
+            return None
+
+    async def fake_build_run_baseline(sessions: object, requested: object) -> BaselineDocument:
+        return baseline
+
+    settings = SimpleNamespace(database_url="sqlite+aiosqlite:///:memory:")
+    monkeypatch.setattr(cli, "Settings", lambda: settings)
+    monkeypatch.setattr(cli, "create_engine", lambda _: FakeEngine())
+    monkeypatch.setattr(cli, "create_session_factory", lambda _: object())
+    monkeypatch.setattr(cli, "build_run_baseline", fake_build_run_baseline)
+
+    output = tmp_path / "main.json"
+    exit_code = main(["eval", "baseline", str(run_id), "--output", str(output)])
+
+    assert exit_code == 0
+    assert read_baseline(output) == baseline
+    assert str(output) in capsys.readouterr().out
+
+
+def test_eval_baseline_command_defaults_to_the_dataset_file(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    run_id = uuid4()
+    baseline = BaselineDocument(
+        dataset="nfcorpus",
+        split="test",
+        sample_size=50,
+        seed=42,
+        run_id=run_id,
+        git_commit="abc123",
+        recorded_at=datetime.now(UTC),
+        variant_hashes={"bm25": "h" * 64},
+        index_fingerprints={"bm25": "f" * 64},
+        metrics={"bm25": {"ndcg_at_10": 0.5}},
+    )
+
+    async def fake_build_run_baseline(sessions: object, requested: object) -> BaselineDocument:
+        assert requested == run_id
+        return baseline
+
+    monkeypatch.chdir(tmp_path)
+
+    class FakeEngine:
+        async def dispose(self) -> None:
+            return None
+
+    monkeypatch.setattr(
+        cli,
+        "Settings",
+        lambda: SimpleNamespace(database_url="sqlite+aiosqlite:///:memory:"),
+    )
+    monkeypatch.setattr(cli, "create_engine", lambda _: FakeEngine())
+    monkeypatch.setattr(cli, "create_session_factory", lambda _: object())
+    monkeypatch.setattr(cli, "build_run_baseline", fake_build_run_baseline)
+
+    exit_code = main(["eval", "baseline", str(run_id)])
+
+    output = tmp_path / "evals" / "baselines" / "nfcorpus.json"
+    assert exit_code == 0
+    assert read_baseline(output) == baseline
+    assert "evals/baselines/nfcorpus.json" in capsys.readouterr().out
+
+
+def test_eval_gate_command_separates_unusable_baselines_from_regressions(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A baseline that cannot be compared exits 2, not the regression code 1."""
+    run_id = uuid4()
+
+    class FakeEngine:
+        async def dispose(self) -> None:
+            return None
+
+    async def fake_gate_evaluation_run(
+        sessions: object,
+        requested_run_id: object,
+        *,
+        baseline_path: Path,
+        thresholds: object,
+    ) -> GateResult:
+        raise ValueError("baseline sample size does not match the run")
+
+    bundle = cli.load_config_bundle(CONFIG_DIRECTORY)
+    monkeypatch.setattr(
+        cli,
+        "Settings",
+        lambda: SimpleNamespace(configuration_directory=CONFIG_DIRECTORY, database_url="sqlite://"),
+    )
+    monkeypatch.setattr(cli, "load_config_bundle", lambda _: bundle)
+    monkeypatch.setattr(cli, "create_engine", lambda _: FakeEngine())
+    monkeypatch.setattr(cli, "create_session_factory", lambda _: object())
+    monkeypatch.setattr(cli, "gate_evaluation_run", fake_gate_evaluation_run)
+
+    exit_code = main(["eval", "gate", str(run_id)])
+
+    assert exit_code == cli.GATE_NOT_COMPARABLE_EXIT_CODE
+    assert exit_code != cli.GATE_BREACHED_EXIT_CODE
+    assert "cannot evaluate gate" in capsys.readouterr().err

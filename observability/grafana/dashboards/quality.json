@@ -1,0 +1,52 @@
+{
+  "annotations": {"list": []},
+  "editable": false,
+  "graphTooltip": 1,
+  "panels": [
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"min": 0, "max": 1}},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+      "id": 1,
+      "targets": [{"expr": "histogram_quantile(0.50, sum(rate(ragops_judge_score_bucket[15m])) by (le, metric, profile))", "legendFormat": "{{profile}} / {{metric}}"}],
+      "title": "Median judge scores",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "currencyUSD"}},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+      "id": 2,
+      "targets": [{"expr": "sum(increase(ragops_llm_cost_USD_total[1h])) by (role, model)", "legendFormat": "{{role}} / {{model}}"}],
+      "title": "Provider cost per hour",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "reqps"}},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+      "id": 3,
+      "targets": [{"expr": "sum(rate(ragops_generation_outcomes_total[5m])) by (outcome, model)", "legendFormat": "{{model}} / {{outcome}}"}],
+      "title": "Generation outcomes",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "s"}},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+      "id": 4,
+      "targets": [{"expr": "histogram_quantile(0.95, sum(rate(ragops_generation_duration_seconds_bucket[5m])) by (le, model, cache_hit))", "legendFormat": "{{model}} cache={{cache_hit}}"}],
+      "title": "Answer P95 latency",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 41,
+  "tags": ["ragops", "quality", "llm"],
+  "templating": {"list": []},
+  "time": {"from": "now-6h", "to": "now"},
+  "timezone": "browser",
+  "title": "RAG answer quality",
+  "uid": "ragops-quality",
+  "version": 1
+}

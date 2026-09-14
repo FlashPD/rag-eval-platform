@@ -1,0 +1,33 @@
+models:
+  embeddings:
+    default:
+      provider: sentence_transformers
+      model: BAAI/bge-small-en-v1.5
+      dimension: 384
+      normalize: true
+  rerankers:
+    default:
+      provider: sentence_transformers
+      model: cross-encoder/ms-marco-MiniLM-L-6-v2
+  generators:
+    default:
+      provider: openai
+      model: gpt-5.4-mini-2026-03-17
+      effort: low
+      max_tokens: 2048
+    budget:
+      provider: openai
+      model: gpt-5.4-mini-2026-03-17
+      effort: low
+      max_tokens: 1024
+  judges:
+    default:
+      provider: openai
+      model: gpt-5.4-2026-03-05
+      effort: medium
+      max_tokens: 4096
+    secondary:
+      provider: openai
+      model: gpt-5.4-mini-2026-03-17
+      effort: medium
+      max_tokens: 2048
