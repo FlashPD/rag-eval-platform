@@ -36,7 +36,7 @@ _METRIC_LABELS = {
     "relevance": "Answer relevance",
     "secondary.faithfulness": "Secondary judge faithfulness",
     "secondary.relevance": "Secondary judge relevance",
-    "cost_usd_per_query": "Cost (USD/query)",
+    "cost_usd_per_query": "Incremental cost (USD/query)",
 }
 
 

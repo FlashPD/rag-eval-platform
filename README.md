@@ -37,6 +37,40 @@ beats dense by 0.0216 nDCG@10 with a 95% interval of [0.0044, 0.0392]. On SciFac
 dense-versus-reranked intervals include zero, so their apparent dense advantage is not significant.
 Plain hybrid never wins nDCG@10, although it ties reranked hybrid on Recall@100 by construction.
 
+### Generated-answer quality
+
+An optional local run evaluates the full cited-answer path on the fixed seed-42 SciFact sample:
+dense retrieval, 50 structured generations with `scifact-v2`, deterministic citation checks,
+SciFact labels and evidence rationales, and two independently configured judges. All 50 provider
+responses completed successfully: 32 answers and 18 evidence-based abstentions. The complete
+Markdown and JSON artifacts are archived with commit and index provenance in
+[`evals/runs/ebd3a2dc-e3db-4348-95a4-e38a10ee9d1d/report.md`](evals/runs/ebd3a2dc-e3db-4348-95a4-e38a10ee9d1d/report.md).
+
+![SciFact generated-answer quality](docs/assets/generation-quality.svg)
+
+| Metric | Score | 95% interval |
+|---|---:|---:|
+| Citation validity | **1.0000** | [1.0000, 1.0000] |
+| Abstention correctness | 0.6800 | [0.5400, 0.8000] |
+| SciFact label accuracy | 0.7800 | [0.6600, 0.8800] |
+| SciFact macro-F1 | 0.8000 | dataset-level statistic |
+| SciFact rationale precision | 0.4526 | [0.3212, 0.5827] |
+| Primary judge faithfulness | 0.9034 | [0.8302, 0.9634] |
+| Secondary judge faithfulness | 0.9600 | [0.9100, 1.0000] |
+| Primary judge answer relevance | 0.9908 | [0.9764, 0.9992] |
+
+The two judges' faithfulness scores differ by 0.0766 mean absolute error and match exactly on 43
+of 50 answers; their relevance scores differ by 0.0092 and match on 45. These are descriptive
+cross-judge checks, not a claim of judge validity. Human-authored calibration labels and Cohen's
+kappa remain a separate acceptance step.
+
+The archived report shows **incremental** run cost because immutable cache hits correctly record
+zero new spend. Reconstructing the cold-equivalent cost from the 50 unique generation records and
+100 unique judge records gives **$1.4137 total, or $0.0283 per evaluated query**: $0.2246 for
+generation, $0.9012 for the primary judge, and $0.2879 for the secondary judge. The default
+zero-cost portfolio workflow does not call OpenAI; this report was produced locally with a
+user-supplied key.
+
 ### SciFact detail
 
 BEIR SciFact, **all 300 test queries**, `BAAI/bge-small-en-v1.5` embeddings and
@@ -232,7 +266,7 @@ invocation inserted only the remaining 39,246, and a final rerun inserted zero. 
 dense retrieval was 67 ms; reranking dominated at 3.11 s P95, well above the phase-1 600 ms target.
 
 The checked-in `fixtures/tiny-beir` corpus backs the integration tests and needs no download. The
-suite passes 186 tests along with Ruff and strict mypy. Provider calls are exercised with recorded
+suite passes 190 tests along with Ruff and strict mypy. Provider calls are exercised with recorded
 HTTP responses, so the default suite is deterministic and has no API spend. The complete core
 Compose stack has also been validated on Apple Silicon: the API and PostgreSQL report healthy, the
 migration exits successfully, the worker polls for jobs, Prometheus scrapes application metrics,
@@ -473,7 +507,7 @@ Run retrieval across all variants while generating only for the domain's selecte
   --judge-profiles default,secondary
 ```
 
-SciFact automatically uses `scifact-v1`; NFCorpus and FiQA use `answer-v1`. The scheduled workflow
+SciFact automatically uses `scifact-v2`; NFCorpus and FiQA use `answer-v1`. The scheduled workflow
 uses the same 200-query seed-42 slices and selects `dense_bge_small` for SciFact/FiQA and
 `hybrid_rrf_rerank` for NFCorpus, matching the cross-domain retrieval results above.
 
@@ -520,13 +554,14 @@ flight finishes.
 
 ## Remaining work
 
-Phase 2's local implementation is complete, but its empirical acceptance evidence is deliberately
-not fabricated. A maintainer still needs to add the `OPENAI_API_KEY` Actions secret, run the
-scheduled workflow to publish the three answer reports and their reviewed baselines, author and
-review the human calibration labels, publish the kappa report, and record answer latency on the
-reference hardware. A complete answer trace should also be confirmed in the optional Langfuse
-profile; OpenTelemetry spans and model/cost attributes are emitted, but that UI check requires a
-configured Langfuse project.
+Phase 2's local implementation and SciFact generation evidence are complete. The checked-in
+50-query report covers generation correctness, two-judge scoring, confidence intervals, model
+cost, and reproducible provenance. A maintainer still needs to author and independently review the
+human calibration labels, publish the kappa report, and record answer latency on the reference
+hardware. Cross-domain answer reports remain optional future evidence rather than a requirement
+for the zero-cost portfolio path. A complete answer trace should also be confirmed in the optional
+Langfuse profile; OpenTelemetry spans and model/cost attributes are emitted, but that UI check
+requires a configured Langfuse project.
 
 Phase 3's production implementation is complete in code: remote state and OIDC, the ECS runtime, stateless S3
 artifact synchronization, component-injected RDS credentials, ADOT-to-CloudWatch/X-Ray telemetry,
@@ -538,10 +573,10 @@ certificate and provider secret, run the protected infrastructure and release wo
 evaluation through the deployed worker, record observed cost, and capture the CloudWatch/X-Ray
 screenshots.
 
-Final portfolio packaging remains after deployment: ADRs, model card, screenshots, release tag,
-and the external `deep-research` scoring adapter. The real-dataset CI matrix is slow the first time
-a content-derived cache key is built—especially for FiQA—but subsequent runs restore the durable
-index snapshots.
+Remaining portfolio packaging is intentionally local-first: human judge calibration, a concise
+model/data card, an observability screenshot, and a release tag. The external `deep-research`
+scoring adapter is optional. The real-dataset CI matrix is slow the first time a content-derived
+cache key is built—especially for FiQA—but subsequent runs restore the durable index snapshots.
 
 ## Design
 
